@@ -1,8 +1,8 @@
 """Separate scene lighting from piece content, gate on content drift, repair.
 
 Lighting model: in linear light, reference ~= a * original + b per channel,
-with a and b smooth over a large window (guided-filter form). Whatever that
-model cannot explain is content drift.
+with a and b smooth fields fitted on a coarse grid. Whatever that model
+cannot explain is content drift.
 """
 from dataclasses import dataclass
 
@@ -30,18 +30,40 @@ class GateResult:
                 "located": self.located.to_json(), "reason": self.reason}
 
 
-def _box(a, r):
-    return cv2.boxFilter(a, -1, (2 * r + 1, 2 * r + 1), borderType=cv2.BORDER_REFLECT)
+def lighting_model(orig_lin, ref_lin, grid=12, eps=4e-4):
+    """Smooth lighting fields (a, b) with ref ~= a * orig + b, per channel.
 
-
-def lighting_model(orig_lin, ref_lin, radius, eps=2e-3):
-    mo, mr = _box(orig_lin, radius), _box(ref_lin, radius)
-    cov = _box(orig_lin * ref_lin, radius) - mo * mr
-    var = _box(orig_lin * orig_lin, radius) - mo * mo
-    a = cov / (var + eps)
-    a = np.clip(a, 0.0, 8.0)
-    b = mr - a * mo
-    return _box(a, radius), _box(b, radius)
+    Fit per tile on a coarse grid, reject outlier tiles with a median filter,
+    then smooth and upsample. Scene light is smooth; anything sharper is the
+    model changing content, and must not leak into the lighting."""
+    h, w = orig_lin.shape[:2]
+    gy = max(2, round(grid * h / max(h, w)))
+    gx = max(2, round(grid * w / max(h, w)))
+    A = np.ones((gy, gx, 3), np.float32)
+    Bf = np.zeros((gy, gx, 3), np.float32)
+    for i in range(gy):
+        for j in range(gx):
+            sl = (slice(i * h // gy, (i + 1) * h // gy), slice(j * w // gx, (j + 1) * w // gx))
+            o = orig_lin[sl].reshape(-1, 3)
+            r = ref_lin[sl].reshape(-1, 3)
+            mo, mr = o.mean(0), r.mean(0)
+            var = o.var(0)
+            cov = ((o - mo) * (r - mr)).mean(0)
+            a = cov / (var + eps)
+            # flat tiles carry no slope information: fall back to a pure gain
+            gain = (mr + 1e-4) / (mo + 1e-4)
+            t = var / (var + eps)
+            a = t * a + (1 - t) * gain
+            a = np.clip(a, 0.15, 4.0)
+            A[i, j] = a
+            Bf[i, j] = np.clip(mr - a * mo, -0.05, 0.25)
+    A = cv2.medianBlur(A, 3)
+    Bf = cv2.medianBlur(Bf, 3)
+    A = cv2.GaussianBlur(A, (0, 0), 0.8, borderType=cv2.BORDER_REPLICATE)
+    Bf = cv2.GaussianBlur(Bf, (0, 0), 0.8, borderType=cv2.BORDER_REPLICATE)
+    A = cv2.resize(A, (w, h), interpolation=cv2.INTER_CUBIC)
+    Bf = cv2.resize(Bf, (w, h), interpolation=cv2.INTER_CUBIC)
+    return A.astype(np.float32), Bf.astype(np.float32)
 
 
 def _band(g, s1, s2):
@@ -119,8 +141,7 @@ def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, located=No
     if area < min_area:
         return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, "area")
     wp, flat, _ = measure(piece, scene, located)
-    radius = max(4, round(max(wp.shape[:2]) / 24))
-    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat), radius)
+    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
     relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
     # Compare the scene's copy against the relit original: lighting explained,
     # only content differences remain.
@@ -151,8 +172,7 @@ def relight(piece, scene, located):
     """Return the original piece relit by the scene, at full piece resolution,
     in linear light, plus the (a, b) fields at full resolution."""
     wp, flat, _ = measure(piece, scene, located)
-    radius = max(4, round(max(wp.shape[:2]) / 24))
-    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat), radius)
+    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
     h, w = piece.shape[:2]
     a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
     b = cv2.resize(b, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -185,7 +205,6 @@ def verify(piece, final, located):
     """Detail correlation between the original and the final image's piece region
     (lighting explained away first)."""
     wp, flat, _ = measure(piece, final, located)
-    radius = max(4, round(max(wp.shape[:2]) / 24))
-    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat), radius)
+    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
     relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
     return detail_correlation(relit, flat)

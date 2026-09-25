@@ -180,12 +180,17 @@ def develop(job):
     out, report = timelapse.develop(plate, st, mask, job["energy"])
     np.save(job.file("develop", "exposure.npy"), out.astype(np.float16))
     media.save_image(job.file("develop", "exposure-preview.jpg"), np.clip(color.linear_to_srgb(out), 0, 1))
-    for n in report["notes"]:
-        if n.startswith(("camera-moved", "no-motion", "background:median", "occlusion-removed")):
-            job.warn(n)
     job.data["develop"] = report
     job.done("develop")
     return {"report": report, "preview": str(job.file("develop", "exposure-preview.jpg")), "next": "finish"}
+
+
+DEVELOP_WARNINGS = ("camera-moved", "no-motion", "background:median", "occlusion-removed")
+
+
+def _warnings(job):
+    notes = job.get("develop", {}).get("notes", [])
+    return list(job["warnings"]) + [n for n in notes if n.startswith(DEVELOP_WARNINGS)]
 
 
 def finish(job):
@@ -207,16 +212,16 @@ def finish(job):
         "brief": job["brief"], "endpoints": job["endpoints"],
         "requests": {k: v.get("request_id") for k, v in job["fal"].items()},
         "gate": job["stages"]["still"], "final_verify": round(score, 4), "develop": job["develop"],
-        "warnings": job["warnings"], "outputs": [str(png), str(jpg)],
+        "warnings": _warnings(job), "outputs": [str(png), str(jpg)],
     }
     job.file("out", "manifest.json").write_text(json.dumps(manifest, indent=2, default=float))
     job.done("finish", final_verify=score)
     return {"presentation": str(png), "jpeg": str(jpg), "final_verify": round(score, 4),
-            "warnings": job["warnings"]}
+            "warnings": _warnings(job)}
 
 
 def status(job):
     return {"job": str(job.root), "stages": {s: job.is_done(s) for s in
             ["init", "analyze", "brief", "still", "video", "develop", "finish"]},
-            "warnings": job["warnings"], "pending": {k: v["request_id"] for k, v in job["fal"].items()
+            "warnings": _warnings(job), "pending": {k: v["request_id"] for k, v in job["fal"].items()
                                                      if not v.get("done")}}

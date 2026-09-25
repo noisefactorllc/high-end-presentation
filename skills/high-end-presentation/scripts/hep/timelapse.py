@@ -7,8 +7,9 @@ Two passes over the frames, all registered onto the plate:
      C of those frames, lighten max L, plain mean M.
 
 Ghosts:  alpha = 1 - (1 - P) ** k   (k = energy ghost density). A person who
-stood still has P near 1 and stays solid; a passer-by has small P and is
-faint but boosted by k.
+stood still has P near 1 and stays solid; a passer-by crosses a pixel in a
+few percent of the frames, and k lifts that to a visible translucent ghost
+(plain mean stacking would leave it at a few percent, which is invisible).
 Trails:  bright light above the ghost image, from L.
 """
 from dataclasses import dataclass, field
@@ -19,10 +20,12 @@ import numpy as np
 from . import color, locate, media
 
 ENERGY = {
-    "quiet":    {"ghost_k": 1.6, "trail_gain": 0.35, "occlusion": 0.0},
-    "calm":     {"ghost_k": 1.8, "trail_gain": 0.6,  "occlusion": 0.0},
-    "lively":   {"ghost_k": 2.2, "trail_gain": 0.9,  "occlusion": 0.2},
-    "bustling": {"ghost_k": 2.6, "trail_gain": 1.2,  "occlusion": 0.4},
+    # clearing: how far (as a fraction of the piece's size) ghosts fade out as
+    # they approach the piece, when the energy forbids them crossing it.
+    "quiet":    {"ghost_k": 4.0,  "trail_gain": 0.35, "occlusion": 0.0, "clearing": 0.16},
+    "calm":     {"ghost_k": 5.5,  "trail_gain": 0.6,  "occlusion": 0.0, "clearing": 0.12},
+    "lively":   {"ghost_k": 8.0,  "trail_gain": 0.9,  "occlusion": 0.2, "clearing": 0.03},
+    "bustling": {"ghost_k": 11.0, "trail_gain": 1.2,  "occlusion": 0.4, "clearing": 0.02},
 }
 
 MEDIAN_SAMPLES = 41
@@ -172,31 +175,47 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None):
     alpha = 1.0 - (1.0 - np.clip(st.P, 0, 1)) ** e["ghost_k"]
     G = alpha[..., None] * (st.C - st.B)
     ghost_img = st.B + G
+    # trails: only light that is bright in absolute terms (lamps, headlights,
+    # glints). People in pale clothes are ghosts, not trails.
     excess = np.maximum(st.L - np.maximum(ghost_img, st.B), 0)
-    T = excess * smoothstep(0.03, 0.2, color.luma(excess))[..., None]
+    bright = smoothstep(0.5, 0.9, color.luma(st.L)) * smoothstep(0.08, 0.3, color.luma(excess))
+    T = excess * bright[..., None]
     D = G + e["trail_gain"] * T
     # dead zone against compression noise
     mag = np.abs(D).max(-1, keepdims=True)
-    D = D * smoothstep(0.002, 0.008, mag)
+    D = D * smoothstep(0.004, 0.012, mag)
 
     shape = plate_srgb.shape
     plate_lin = color.srgb_to_linear(plate_srgb)
     m_canvas = cv2.resize(piece_mask, (st.B.shape[1], st.B.shape[0]), interpolation=cv2.INTER_AREA)
     area = max(float(m_canvas.sum()), 1.0)
     sigma = max(2.0, 0.08 * np.sqrt(area))
-    # lighting over the piece: low-frequency ratio of mean exposure to background
-    K = cv2.GaussianBlur(st.M, (0, 0), sigma) / np.maximum(cv2.GaussianBlur(st.B, (0, 0), sigma), 1e-4)
-    K = np.clip(K, 0.3, 1.6)
+    # The display (piece, frame, and a small margin) is protected like the piece:
+    # video models drift frames and edges during a clip, which is not activity.
+    # Protected display = piece + frame band, then a smooth clearing around it.
+    band_px = max(2, int(round(0.015 * np.sqrt(area))))
+    hard = cv2.dilate((m_canvas > 0.02).astype(np.uint8), np.ones((2 * band_px + 1,) * 2, np.uint8))
+    dist = cv2.distanceTransform((1 - hard).astype(np.uint8), cv2.DIST_L2, 5)
+    reach = max(1.0, e.get("clearing", 0.02) * np.sqrt(area))
+    display = np.exp(-(dist / reach) ** 2).astype(np.float32)
+    display = np.maximum(display, m_canvas)
+    # lighting over the display: low-frequency luminance ratio, limited to what
+    # passing people and room light can plausibly do
+    lm = cv2.GaussianBlur(color.luma(st.M), (0, 0), sigma)
+    lb = cv2.GaussianBlur(color.luma(st.B), (0, 0), sigma)
+    K = np.clip(lm / np.maximum(lb, 1e-4), 0.55, 1.15)[..., None]
     D_low = cv2.GaussianBlur(D, (0, 0), sigma)
     D_hf = D - D_low
     inside = m_canvas > 0.5
     occ_raw = float((np.abs(D_hf).max(-1)[inside] > 0.03).mean()) if inside.any() else 0.0
 
     D_up, K_up, Dhf_up = _up(D, shape), _up(K, shape), _up(D_hf, shape)
-    m = piece_mask[..., None]
+    if K_up.ndim == 2:
+        K_up = K_up[..., None]
+    disp_up = _up(display, shape)[..., None]
     outside = plate_lin + D_up
-    in_piece = plate_lin * K_up + e["occlusion"] * Dhf_up
-    out = outside * (1 - m) + in_piece * m
+    in_display = plate_lin * K_up + e["occlusion"] * Dhf_up
+    out = outside * (1 - disp_up) + in_display * disp_up
     report = {
         "frames": st.count,
         "canvas_scale": round(st.canvas_scale, 4),
@@ -204,6 +223,8 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None):
         "ghost_coverage": round(float((alpha > 0.05).mean()), 4),
         "trail_peak": round(float(T.max()), 4),
         "piece_light_range": [round(float(K[inside].min()), 3), round(float(K[inside].max()), 3)] if inside.any() else None,
+        "display_band_px": band_px,
+        "clearing_px": round(float(reach), 1),
         "occlusion_raw": round(occ_raw, 4),
         "occlusion_allowed": e["occlusion"],
         "max_shift": round(st.max_shift, 4),
