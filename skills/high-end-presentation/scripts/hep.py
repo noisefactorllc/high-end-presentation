@@ -22,7 +22,7 @@ def main(argv=None):
     ap.add_argument("stage", choices=["init", "analyze", "brief", "still", "draft", "video", "develop", "finish",
                                       "status"])
     ap.add_argument("--job", required=True, help="job directory")
-    ap.add_argument("--piece")
+    ap.add_argument("--piece", action="append", help="artwork file; repeat for several pieces, left to right")
     ap.add_argument("--prompt", default="")
     ap.add_argument("--scene", default="freeform")
     ap.add_argument("--energy", default="calm")

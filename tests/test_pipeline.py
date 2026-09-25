@@ -82,7 +82,7 @@ def test_full_chain(setup):
     rep = stages.develop(job)["report"]
     assert rep["frames"] == 36
     out = stages.finish(job)
-    assert out["final_verify"] >= stages.FINAL_MIN_CORR
+    assert min(out["final_verify"]) >= stages.FINAL_MIN_CORR
     manifest = json.loads((root / "out/manifest.json").read_text())
     assert manifest["requests"]["video"] == "fake-video"
     img = media.load_image(out["jpeg"])
@@ -144,13 +144,13 @@ def test_moving_piece_with_echo(setup):
     stages.init(root, clip, "gallery", echo=True)
     job = Job(root)
     a = stages.analyze(job)["analysis"]
-    assert a["source"]["kind"] == "video"
-    assert (root / "piece-echo.png").exists() and (root / "piece-preview.jpg").exists()
+    assert a["pieces"][0]["source"]["kind"] == "video"
+    assert (root / "piece-0-echo.png").exists() and (root / "piece-0-preview.jpg").exists()
     stages.brief(job, json.loads(_brief(tmp).read_text()))
     assert stages.still(job)["passed"]
     stages.video(job)
     stages.develop(job)
-    assert stages.finish(job)["final_verify"] >= stages.FINAL_MIN_CORR
+    assert min(stages.finish(job)["final_verify"]) >= stages.FINAL_MIN_CORR
 
 
 def test_explicit_frame_is_used(setup):
@@ -163,5 +163,46 @@ def test_explicit_frame_is_used(setup):
     stages.init(tmp / "fj", clip, "x", frame=7)
     job = Job(tmp / "fj")
     stages.analyze(job)
-    assert job["analysis"]["source"]["frame_index"] == 7
-    assert abs(media.load_image(tmp / "fj/piece.png").mean() - 175 / 255) < 0.02
+    assert job["analysis"]["pieces"][0]["source"]["frame_index"] == 7
+    assert abs(media.load_image(tmp / "fj/piece-0.png").mean() - 175 / 255) < 0.02
+
+
+def _pair_scene(place_right=True):
+    left = textured_piece(240, 240, seed=11)
+    right = textured_piece(240, 240, seed=12)
+    bg = np.clip(0.6 * plain_scene(640, 512) + 0.4 * textured_piece(640, 512, seed=3), 0, 1).astype(np.float32)
+    scene, _ = place(left, bg, [[40, 150], [236, 150], [236, 346], [40, 346]])
+    if place_right:
+        scene, _ = place(right, scene, [[276, 150], [472, 150], [472, 346], [276, 346]])
+    return left, right, scene
+
+
+def test_several_pieces(tmp_path, monkeypatch):
+    left, right, scene = _pair_scene()
+    monkeypatch.setattr(stages, "_client", lambda: FakeClient(tmp_path, scene))
+    root = tmp_path / "pair"
+    stages.init(root, [media.save_image(tmp_path / "l.png", left), media.save_image(tmp_path / "r.png", right)],
+                "two screens", scene="screens", energy="bustling")
+    job = Job(root)
+    assert job["glazed"]
+    a = stages.analyze(job)["analysis"]
+    assert len(a["pieces"]) == 2 and a["palette"]
+    stages.brief(job, json.loads(_brief(tmp_path).read_text()))
+    s = stages.still(job)
+    assert s["passed"] and len(s["pieces"]) == 2
+    stages.video(job)
+    stages.develop(job)
+    out = stages.finish(job)
+    assert len(out["final_verify"]) == 2 and min(out["final_verify"]) >= stages.FINAL_MIN_CORR
+
+
+def test_missing_second_piece_fails_the_gate(tmp_path, monkeypatch):
+    left, right, scene = _pair_scene(place_right=False)
+    monkeypatch.setattr(stages, "_client", lambda: FakeClient(tmp_path, scene))
+    root = tmp_path / "pair"
+    stages.init(root, [media.save_image(tmp_path / "l.png", left), media.save_image(tmp_path / "r.png", right)], "x")
+    job = Job(root)
+    stages.analyze(job)
+    stages.brief(job, json.loads(_brief(tmp_path).read_text()))
+    with pytest.raises(stages.GateFailed, match="piece 1"):
+        stages.still(job, attempts=1)

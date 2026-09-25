@@ -12,17 +12,29 @@ ENERGY_MOTION = {
                  "stop in front of the artwork to look. Moving lights and shadows sweep across the space."),
 }
 
-def still_prompt(scene_text, piece_w, piece_h):
+def _ratio(w, h):
     from math import gcd
-    g = gcd(piece_w, piece_h) or 1
-    ratio = f"{piece_w // g}:{piece_h // g}" if max(piece_w // g, piece_h // g) < 50 else f"{piece_w / piece_h:.3f}:1"
-    return (
-        f"{scene_text.strip()}\n\n"
-        "The provided image is the artwork on display. Reproduce it exactly as given: the same composition, "
-        f"marks, detail, and colors, at its exact aspect ratio ({ratio}). Do not crop, redraw, restyle, extend, "
-        "mirror, or add anything to the artwork. The whole artwork is visible and nothing covers it. "
-        "The scene contains no people. Photographic realism; the room's light falls naturally on the artwork."
-    )
+    g = gcd(w, h) or 1
+    return f"{w // g}:{h // g}" if max(w // g, h // g) < 50 else f"{w / h:.3f}:1"
+
+
+def still_prompt(scene_text, sizes):
+    """sizes: [(width, height)] of the provided artworks, in order."""
+    if len(sizes) == 1:
+        (w, h), = sizes
+        fidelity = ("The provided image is the artwork on display. Reproduce it exactly as given: the same "
+                    f"composition, marks, detail, and colors, at its exact aspect ratio ({_ratio(w, h)}). Do not "
+                    "crop, redraw, restyle, extend, mirror, or add anything to the artwork. The whole artwork is "
+                    "visible and nothing covers it.")
+    else:
+        order = "; ".join(f"image {i + 1} at {_ratio(w, h)}" for i, (w, h) in enumerate(sizes))
+        fidelity = (f"The {len(sizes)} provided images are {len(sizes)} separate artworks on display, placed in "
+                    f"order from left to right ({order}). Reproduce each one exactly as given: the same "
+                    "composition, marks, detail, and colors, at its exact aspect ratio. Keep them separate; do "
+                    "not merge, crop, redraw, restyle, extend, mirror, or add anything to any artwork. Every "
+                    "artwork is fully visible and nothing covers it.")
+    return (f"{scene_text.strip()}\n\n{fidelity} The scene contains no people. Photographic realism; the "
+            "light in the scene falls naturally on the artwork.")
 
 
 def video_prompt(motion_text, energy):

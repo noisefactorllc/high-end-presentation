@@ -55,6 +55,16 @@ Motion: "Visitors drift through the dim room. Their silhouettes pass behind and 
 
 Light choices: keep the room darker than the piece so the piece reads as the light source.
 
+## screens
+
+For glowing, saturated, or moving pieces shown as displays in a busy public space. Several pieces work well here as a row or a wall of screens.
+
+Scene: "A photograph of a busy international airport concourse at night. The artworks play on large, bright, frameless LCD screens mounted side by side on a dark wall above the concourse, glowing intensely. Their colored light spills across the polished terrazzo floor, the glass balustrade, and the brushed-steel columns. Departure boards glow in the distance. Shot on a 35mm lens at eye level from across the concourse, straight on; the row of screens fills about seventy percent of the frame width."
+
+Motion: "Travelers stream through the concourse in both directions, pulling rolling suitcases, some hurrying, some stopping to look up at the screens. An electric cart glides past with its lights on. The screens' colored light washes over the people as they pass."
+
+Light choices: keep the venue darker than the screens so the screens are the main light sources; polished floors and glass carry their colors through the scene. A mall atrium or a transit hall works the same way.
+
 ## freeform
 
 Write the scene from the operator's prompt. Keep the rules at the top of this file.

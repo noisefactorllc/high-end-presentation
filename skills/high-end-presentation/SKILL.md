@@ -22,7 +22,7 @@ Ask only for what is missing:
 
 | Input | Required | Default | Notes |
 |-------|----------|---------|-------|
-| piece | yes | | still (png, jpg, tiff, webp) or video (mp4, mov, webm, gif) |
+| piece | yes | | still (png, jpg, tiff, webp) or video (mp4, mov, webm, gif); up to 6 pieces, placed left to right in the order given |
 | prompt | yes | | basic guidance: setting, mood, time of day |
 | energy | no | calm | quiet, calm, lively, bustling |
 | aspect | no | 4:5 | 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9 |
@@ -41,7 +41,7 @@ Energy sets the life in the scene:
 
 Under the figures, a streak layer blurs each path; its density is solved per clip, so a busy clip does not turn into a veil.
 
-**Glazing.** For `storefront` and `glass-display` the piece is behind glass: the reference still's reflections stay over the piece, and moving light (headlights, lit passers-by) reflects across it. Set `"glazed": true` in the brief for any other scene with glass in front of the piece (a framed print under glass), or `false` to turn it off.
+**Glazing.** For `storefront`, `glass-display`, and `screens` the piece is behind glass: the reference still's reflections stay over the piece, and moving light (headlights, lit passers-by) reflects across it. Set `"glazed": true` in the brief for any other scene with glass in front of the piece (a framed print under glass), or `false` to turn it off.
 
 ## Setup (once per machine)
 
@@ -58,11 +58,11 @@ export FAL_KEY=...                             # the operator's fal key; never p
 Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate failed, 3 fal request still pending (rerun the same command; it resumes the same request and does not pay twice). Use one job directory per presentation, outside any source repository.
 
 1. **Init.**
-   `$PY $R init --job JOB --piece PIECE --prompt "PROMPT" --scene SCENE --energy ENERGY [--aspect 4:5] [--resolution 2K] [--echo] [--frame N] [--name NAME]`
-   Choose `SCENE` from `references/scenes.md` (gallery, home, storefront, modern-frame, glass-display, freeform).
+   `$PY $R init --job JOB --piece PIECE [--piece PIECE ...] --prompt "PROMPT" --scene SCENE --energy ENERGY [--aspect 4:5] [--resolution 2K] [--echo] [--frame N] [--name NAME]`
+   Choose `SCENE` from `references/scenes.md` (gallery, home, storefront, modern-frame, glass-display, screens, freeform). Repeat `--piece` to show several pieces in one scene; they are placed left to right in the order given, and every rule below applies to each of them.
 
 2. **Analyze.** `$PY $R analyze --job JOB`
-   The output holds the palette (colors with weights), tone (key, contrast, warmth, saturation), and for a video piece the chosen frame. Then **look at `JOB/piece-preview.jpg` yourself.** You are the art director: name the themes and the mood.
+   The output holds, per piece, the palette (colors with weights), tone (key, contrast, warmth, saturation), and for a video piece the chosen frame, plus a merged palette for the grade. Then **look at each `JOB/piece-N-preview.jpg` yourself.** You are the art director: name the themes and the mood.
 
 3. **Brief.** Write a JSON file and run `$PY $R brief --job JOB --brief-file BRIEF.json`.
    Required keys: `themes` (list), `mood` (string), `scene` (the scene paragraph), `motion` (the activity paragraph).
@@ -70,7 +70,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
    Build `scene` and `motion` from the archetype in `references/scenes.md`. Let the analysis drive the choices: light that flatters the palette (a warm spot on a cool, dark piece; soft daylight on a pale one), materials that echo the themes, and a time of day that suits the mood. Follow the rules at the top of `scenes.md`. The runner adds the fidelity and locked-camera clauses itself.
 
 4. **Reference still.** `$PY $R still --job JOB` (about 30 s and USD 0.15 per attempt; up to 3 attempts).
-   On exit 2, read each attempt's `reason`:
+   With several pieces, every piece must pass, each in its own place (`pieces-overlap` means two pieces matched the same spot). On exit 2, read each attempt's `reason` (prefixed `piece N:` when several pieces are given):
    - `not-found:*` or `area`: the piece is too small or hidden. Make it larger in the scene text, rewrite the brief, rerun.
    - `aspect`: the model changed the piece's proportions. Rerun; if it repeats, use a straight-on view.
    - `detail-drift` or `local-drift`: the model redrew the piece. Rerun; simpler scenes help.
@@ -86,7 +86,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
    - `background:median`: the clip's ends did not match the plate; viewers who stood still may vanish.
    - `no-motion`: nothing happened in the clip. Rerun `video` with a more active `motion` text.
 
-8. **Finish.** `$PY $R finish --job JOB` writes `JOB/out/NAME-presentation.png` (16-bit), a JPEG copy, and `manifest.json`. Inspect the JPEG: some image viewers render 16-bit PNGs with false banding. `final_verify` must be at least 0.85 or nothing is written. **Look at the result** before you hand it over, and report the path, the energy, the warnings, and the cost of the calls you made.
+8. **Finish.** `$PY $R finish --job JOB` writes `JOB/out/NAME-presentation.png` (16-bit), a JPEG copy, and `manifest.json`. Inspect the JPEG: some image viewers render 16-bit PNGs with false banding. `final_verify` (one score per piece) must be at least 0.85 for every piece or nothing is written. **Look at the result** before you hand it over, and report the path, the energy, the warnings, and the cost of the calls you made.
 
 `$PY $R status --job JOB` shows completed stages, warnings, and pending requests.
 
