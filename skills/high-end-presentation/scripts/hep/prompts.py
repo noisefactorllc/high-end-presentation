@@ -34,11 +34,12 @@ def video_prompt(motion_text, energy):
     if energy in ("quiet", "calm"):
         parts.append(KEEP_CLEAR)
     parts.append(
-        "Locked-off static camera on a tripod: no camera movement, no zoom, no refocus. The artwork on display "
-        "never changes. The clip begins and ends on this exact empty scene. No text, captions, or logos."
+        "Filmed in smooth slow motion: every movement is slow and continuous, with small changes from frame to "
+        "frame. Locked-off static camera on a tripod: no camera movement, no zoom, no refocus. The artwork on "
+        "display never changes. The clip begins and ends on this exact empty scene. No text, captions, or logos."
     )
     return "\n".join(p for p in parts if p)
 
 
 VIDEO_NEGATIVE = ("camera movement, pan, zoom, dolly, shaky camera, refocus, morphing artwork, changing artwork, "
-                  "text, captions, watermark, logo")
+                  "fast motion, jerky motion, time-lapse, text, captions, watermark, logo")

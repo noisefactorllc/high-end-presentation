@@ -124,3 +124,11 @@ def test_jitter_is_corrected_and_measured(tmp_path):
     b = color.linear_to_srgb(st.B)
     canvas_plate = cv2.resize(plate, (b.shape[1], b.shape[0]), interpolation=cv2.INTER_AREA)
     assert np.abs(b - canvas_plate)[20:-20, 20:-20].mean() < 0.025
+
+
+def test_density_is_solved_to_target():
+    P = np.random.default_rng(0).beta(0.6, 8, (200, 200)).astype(np.float32)
+    for target in (0.28, 0.52):
+        k = timelapse.solve_density(P, target)
+        act = P > 0.02
+        assert abs((1 - (1 - P[act]) ** k).mean() - target) < 0.01

@@ -6,10 +6,14 @@ Two passes over the frames, all registered onto the plate:
   2. per pixel: presence P (share of frames that differ from B), mean color
      C of those frames, lighten max L, plain mean M.
 
-Ghosts:  alpha = 1 - (1 - P) ** k   (k = energy ghost density). A person who
-stood still has P near 1 and stays solid; a passer-by crosses a pixel in a
-few percent of the frames, and k lifts that to a visible translucent ghost
-(plain mean stacking would leave it at a few percent, which is invisible).
+Ghosts:  alpha = 1 - (1 - P) ** k. A person who stood still has P near 1
+and stays solid; a passer-by crosses a pixel in a few percent of the frames,
+and k lifts that to a visible translucent ghost (plain mean stacking would
+leave it at a few percent, which is invisible). k is solved per clip so the
+mean ghost opacity meets the energy's target.
+
+Frames are used as the video model delivers them. The video prompt asks for
+slow motion, so movement per frame stays small and trails stay continuous.
 Trails:  bright light above the ghost image, from L.
 """
 from dataclasses import dataclass, field
@@ -22,13 +26,35 @@ from . import color, locate, media
 ENERGY = {
     # clearing: how far (as a fraction of the piece's size) ghosts fade out as
     # they approach the piece, when the energy forbids them crossing it.
-    "quiet":    {"ghost_k": 4.0,  "trail_gain": 0.35, "occlusion": 0.0, "clearing": 0.16},
-    "calm":     {"ghost_k": 5.5,  "trail_gain": 0.6,  "occlusion": 0.0, "clearing": 0.12},
-    "lively":   {"ghost_k": 8.0,  "trail_gain": 0.9,  "occlusion": 0.2, "clearing": 0.03},
-    "bustling": {"ghost_k": 11.0, "trail_gain": 1.2,  "occlusion": 0.4, "clearing": 0.02},
+    # ghost_opacity: mean ghost opacity over the pixels people passed through.
+    # The density exponent k is solved per clip, so a busy clip does not turn
+    # into a veil and a sparse one does not vanish.
+    "quiet":    {"ghost_opacity": 0.28, "trail_gain": 0.35, "occlusion": 0.0, "clearing": 0.16},
+    "calm":     {"ghost_opacity": 0.37, "trail_gain": 0.6,  "occlusion": 0.0, "clearing": 0.12},
+    "lively":   {"ghost_opacity": 0.45, "trail_gain": 0.9,  "occlusion": 0.2, "clearing": 0.03},
+    "bustling": {"ghost_opacity": 0.52, "trail_gain": 1.2,  "occlusion": 0.4, "clearing": 0.02},
 }
 
 MEDIAN_SAMPLES = 41
+
+
+
+
+def solve_density(P, target, active=0.02):
+    """k such that mean(1 - (1 - P) ** k) over active pixels equals target."""
+    vals = P[P > active]
+    if vals.size == 0:
+        return 1.0
+    if vals.size > 200_000:
+        vals = np.random.default_rng(0).choice(vals, 200_000, replace=False)
+    lo, hi = 0.25, 60.0
+    for _ in range(40):
+        mid = np.sqrt(lo * hi)
+        if (1 - (1 - vals) ** mid).mean() < target:
+            lo = mid
+        else:
+            hi = mid
+    return float(np.sqrt(lo * hi))
 
 
 def smoothstep(e0, e1, x):
@@ -172,7 +198,8 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None):
     piece_mask: soft mask of the piece at plate resolution.
     Returns (out_linear, report)."""
     e = ENERGY[energy] if isinstance(energy, str) else energy
-    alpha = 1.0 - (1.0 - np.clip(st.P, 0, 1)) ** e["ghost_k"]
+    k = e["ghost_k"] if "ghost_k" in e else solve_density(st.P, e["ghost_opacity"])
+    alpha = 1.0 - (1.0 - np.clip(st.P, 0, 1)) ** k
     G = alpha[..., None] * (st.C - st.B)
     ghost_img = st.B + G
     # trails: only light that is bright in absolute terms (lamps, headlights,
@@ -218,6 +245,7 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None):
     out = outside * (1 - disp_up) + in_display * disp_up
     report = {
         "frames": st.count,
+        "ghost_density": round(float(k), 3),
         "canvas_scale": round(st.canvas_scale, 4),
         "presence_mean": round(float(st.P.mean()), 4),
         "ghost_coverage": round(float((alpha > 0.05).mean()), 4),
