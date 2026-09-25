@@ -55,14 +55,15 @@ def analyze(job):
         still = media.read_frame(src, int(job["frame"]))
         result["source"]["frame_index"] = int(job["frame"])
     media.save_image(job.file("piece.png"), still)
+    media.save_image(job.file("piece-preview.jpg"), still)
     if job.get("echo") and media.is_video(src):
         frames = [f for _, f in media.iter_frames(src, step=max(1, result["source"]["frames"] // 48))]
         echo = color.linear_to_srgb(np.mean([color.srgb_to_linear(f) for f in frames], 0))
         media.save_image(job.file("piece-echo.png"), echo)
     job.data["analysis"] = result
     job.done("analyze")
-    return {"analysis": result, "piece_still": str(job.file("piece.png")),
-            "next": "look at piece.png, then write the brief (stage `brief`)"}
+    return {"analysis": result, "piece_preview": str(job.file("piece-preview.jpg")),
+            "next": "look at piece-preview.jpg, then write the brief (stage `brief`)"}
 
 
 BRIEF_KEYS = {"themes", "mood", "scene", "motion"}
@@ -109,13 +110,14 @@ def still(job, attempts=3, timeout=600):
         if g.passed:
             plate, mask, _ = fidelity.repair(piece, scene, g.located)
             media.save_image(job.file("still", "plate.png"), plate)
+            media.save_image(job.file("still", "plate-preview.jpg"), plate)
             np.save(job.file("still", "mask.npy"), mask.astype(np.float16))
             job.data["located"] = g.located.to_json()
             job.data["plate_size"] = [plate.shape[1], plate.shape[0]]
             job.done("still", attempt=n, corr=g.corr, worst_tile=g.worst)
             return {"passed": True, "attempt": n, "gate": g.to_json() | {"located": None},
-                    "plate": str(job.file("still", "plate.png")), "reference": str(path),
-                    "next": "look at the plate; then `draft` for a preview or `video`"}
+                    "plate_preview": str(job.file("still", "plate-preview.jpg")), "reference": str(path),
+                    "next": "look at plate-preview.jpg; then `draft` for a preview or `video`"}
     raise GateFailed(json.dumps({"passed": False, "attempts": [
         {k: a[k] for k in ("attempt", "file", "corr", "worst_tile", "reason")} for a in history[-attempts:]]}))
 
