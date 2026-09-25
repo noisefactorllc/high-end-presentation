@@ -1,0 +1,9 @@
+{
+  "name": "high-end-presentation",
+  "version": "0.1.0",
+  "description": "Presents an artwork (still or video) in a synthetic scene as one long-exposure still: a reference still with the exact piece, a locked-camera video of life around it, time-lapse stacking into light trails and ghosted viewers, depth of field, and a palette-driven grade. Runs its models on fal.",
+  "author": {
+    "name": "Noise Factor LLC"
+  },
+  "keywords": ["art", "presentation", "mockup", "long-exposure", "time-lapse", "fal"]
+}

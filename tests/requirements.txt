@@ -1,0 +1,2 @@
+-r ../skills/high-end-presentation/scripts/requirements.txt
+pytest==9.1.1
