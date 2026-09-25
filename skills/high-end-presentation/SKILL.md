@@ -80,7 +80,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
 
 6. **Video.** `$PY $R video --job JOB [--timeout 900]` (Kling v3 Pro, 10 s clip: about 4 minutes and about USD 1.40). Exit 3 means it is still rendering; rerun the same command. Run it in the background when your harness allows.
 
-7. **Develop.** `$PY $R develop --job JOB` (about 40 s). Stacks the clip into the long exposure and writes `JOB/develop/exposure-preview.jpg`. Read the report:
+7. **Develop.** `$PY $R develop --job JOB` (about 70 s). Stacks the clip into the long exposure and writes `JOB/develop/exposure-preview.jpg`. Read the report:
    - `piece_covered`: share of the piece that figures cover. Above about 0.5 the piece reads poorly; rerun `video` or lower the energy.
    - `camera-moved`: the video model moved the camera; registration compensated. Look for doubled edges.
    - `background:median`: the clip's ends did not match the plate; viewers who stood still may vanish.

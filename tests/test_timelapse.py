@@ -151,3 +151,19 @@ def test_density_is_solved_to_target():
         k = timelapse.solve_density(P, target)
         act = P > 0.02
         assert abs((1 - (1 - P[act]) ** k).mean() - target) < 0.01
+
+
+def test_single_frame_flash_fades_but_steady_light_stays(tmp_path):
+    plate = _scene_with_texture()
+    frames = []
+    for i in range(30):
+        f = plate.copy()
+        cv2.circle(f, (60 + i * 20, 400), 4, (1, 1, 1), -1)   # fast: one frame per spot
+        cv2.circle(f, (120 + i, 120), 4, (1, 1, 1), -1)       # slow: many frames per spot
+        frames.append(f)
+    st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
+    out, _ = timelapse.develop(plate, st, _full_mask(plate), "bustling")
+    srgb = color.linear_to_srgb(out)
+    fast = srgb[400, 60:360].mean() - plate[400, 60:360].mean()
+    slow = srgb[120, 125:145].mean() - plate[120, 125:145].mean()
+    assert slow > 2 * fast

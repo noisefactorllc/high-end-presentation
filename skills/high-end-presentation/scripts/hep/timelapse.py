@@ -18,7 +18,8 @@ translucent figure, and people who stop build up towards solid.
 
 Frames are used as the video model delivers them. The video prompt asks for
 slow motion, so movement per frame stays small and trails stay continuous.
-Trails:  bright light above the ghost image, from L.
+Trails:  bright light above the ghost image, from L (the mean of the few
+brightest frames at each pixel).
 """
 from dataclasses import dataclass, field
 
@@ -44,6 +45,8 @@ ENERGY = {
 
 MEDIAN_SAMPLES = 41
 MAX_EXPOSURES = 16
+TRAIL_TOP_K = 6  # trails average the k brightest frames per pixel, so a light
+                 # seen in a single frame fades instead of printing a dot
 GLASS_REFLECTION = 0.7  # share of moving light that reflects in glazing over the piece
 
 
@@ -75,7 +78,7 @@ def smoothstep(e0, e1, x):
 class Stack:
     B: np.ndarray          # background, linear
     M: np.ndarray          # plain mean, linear
-    L: np.ndarray          # lighten max, linear
+    L: np.ndarray          # mean of the brightest frames per pixel, linear
     P: np.ndarray          # presence 0-1
     C: np.ndarray          # mean color while present, linear
     canvas_scale: float    # canvas px = plate px * canvas_scale
@@ -175,7 +178,9 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
     sumM = np.zeros_like(B, np.float64)
     sumC = np.zeros_like(B, np.float64)
     sumP = np.zeros(B.shape[:2], np.float64)
-    L = np.zeros_like(B)
+    top = np.zeros((TRAIL_TOP_K,) + B.shape, np.float32)
+    top_l = np.zeros((TRAIL_TOP_K,) + B.shape[:2], np.float32)
+    rows, cols = np.indices(B.shape[:2])
     n = 0
     for i, f in media.iter_frames(video_path):
         a = cv2.warpPerspective(f, Mc @ jit.get(i, np.eye(3)), (cw, ch), flags=cv2.INTER_LINEAR,
@@ -185,10 +190,17 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
         sumM += lin
         sumC += lin * w[..., None]
         sumP += w
-        np.maximum(L, lin, out=L)
+        lum = color.luma(lin)
+        slot = np.argmin(top_l, axis=0)
+        brighter = lum > top_l[slot, rows, cols]
+        r, c, k = rows[brighter], cols[brighter], slot[brighter]
+        top[k, r, c] = lin[brighter]
+        top_l[k, r, c] = lum[brighter]
         if i in picks:
             exposures.append((lin.astype(np.float16), w.astype(np.float16)))
         n += 1
+    L = top.mean(0) if n >= TRAIL_TOP_K else top.max(0)
+    del top, top_l
     P = (sumP / max(n, 1)).astype(np.float32)
     C = np.where(sumP[..., None] > 1e-6, sumC / np.maximum(sumP[..., None], 1e-6), B).astype(np.float32)
     M = (sumM / max(n, 1)).astype(np.float32)
