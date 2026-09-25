@@ -16,7 +16,7 @@ def textured_piece(h=360, w=480, seed=1):
     img[..., 0] = 0.5 + 0.4 * np.sin(xx / 17.0 + seed)
     img[..., 1] = 0.5 + 0.4 * np.sin(yy / 23.0 + xx / 41.0)
     img[..., 2] = 0.5 + 0.4 * np.cos((xx + yy) / 29.0)
-    for _ in range(60):
+    for _ in range(220):
         c = rng.random(3).astype(np.float32)
         x, y = int(rng.integers(0, w)), int(rng.integers(0, h))
         r = int(rng.integers(4, 26))

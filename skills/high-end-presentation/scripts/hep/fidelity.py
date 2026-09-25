@@ -1,0 +1,191 @@
+"""Separate scene lighting from piece content, gate on content drift, repair.
+
+Lighting model: in linear light, reference ~= a * original + b per channel,
+with a and b smooth over a large window (guided-filter form). Whatever that
+model cannot explain is content drift.
+"""
+from dataclasses import dataclass
+
+import cv2
+import numpy as np
+
+from . import color, locate, media
+
+WORK_SIDE = 1536  # resolution for measuring (not for output)
+
+
+@dataclass
+class GateResult:
+    passed: bool
+    corr: float
+    worst: float
+    bands: list
+    area: float
+    located: locate.Located
+    reason: str
+
+    def to_json(self):
+        return {"passed": self.passed, "corr": round(self.corr, 4), "worst_tile": round(self.worst, 4),
+                "bands": [round(b, 4) for b in self.bands], "area": round(self.area, 4),
+                "located": self.located.to_json(), "reason": self.reason}
+
+
+def _box(a, r):
+    return cv2.boxFilter(a, -1, (2 * r + 1, 2 * r + 1), borderType=cv2.BORDER_REFLECT)
+
+
+def lighting_model(orig_lin, ref_lin, radius, eps=2e-3):
+    mo, mr = _box(orig_lin, radius), _box(ref_lin, radius)
+    cov = _box(orig_lin * ref_lin, radius) - mo * mr
+    var = _box(orig_lin * orig_lin, radius) - mo * mo
+    a = cov / (var + eps)
+    a = np.clip(a, 0.0, 8.0)
+    b = mr - a * mo
+    return _box(a, radius), _box(b, radius)
+
+
+def _band(g, s1, s2):
+    return cv2.GaussianBlur(g, (0, 0), s1) - cv2.GaussianBlur(g, (0, 0), s2)
+
+
+def detail_bands(x, y, side=512):
+    """Band-pass normalized correlation of luma at two scales."""
+    h, w = x.shape[:2]
+    s = side / max(h, w)
+    size = (max(8, round(w * s)), max(8, round(h * s)))
+    gx = color.luma(cv2.resize(x, size, interpolation=cv2.INTER_AREA))
+    gy = color.luma(cv2.resize(y, size, interpolation=cv2.INTER_AREA))
+    out = []
+    for s1, s2 in ((0.8, 2.4), (2.4, 7.2)):
+        bx, by = _band(gx, s1, s2), _band(gy, s1, s2)
+        bx -= bx.mean()
+        by -= by.mean()
+        den = np.sqrt((bx * bx).sum() * (by * by).sum()) + 1e-12
+        out.append(float((bx * by).sum() / den))
+    return out
+
+
+def detail_correlation(x, y):
+    return float(np.mean(detail_bands(x, y)))
+
+
+def tile_correlations(x, y, grid=4, side=512, min_energy=0.15):
+    """Band-pass correlation per tile. Tiles with little detail in x (flat
+    areas, where correlation means nothing) are skipped. Returns a list."""
+    h, w = x.shape[:2]
+    s = side / max(h, w)
+    size = (max(8, round(w * s)), max(8, round(h * s)))
+    gx = color.luma(cv2.resize(x, size, interpolation=cv2.INTER_AREA))
+    gy = color.luma(cv2.resize(y, size, interpolation=cv2.INTER_AREA))
+    bx = _band(gx, 0.8, 2.4) + _band(gx, 2.4, 7.2)
+    by = _band(gy, 0.8, 2.4) + _band(gy, 2.4, 7.2)
+    H, W = bx.shape
+    tiles, energy = [], []
+    for i in range(grid):
+        for j in range(grid):
+            sl = (slice(i * H // grid, (i + 1) * H // grid), slice(j * W // grid, (j + 1) * W // grid))
+            tx, ty = bx[sl] - bx[sl].mean(), by[sl] - by[sl].mean()
+            ex = float((tx * tx).sum())
+            den = np.sqrt(ex * float((ty * ty).sum())) + 1e-12
+            tiles.append(float((tx * ty).sum() / den))
+            energy.append(ex)
+    energy = np.array(energy)
+    keep = energy >= min_energy * np.median(energy)
+    return [t for t, k in zip(tiles, keep) if k]
+
+
+def _work_piece(piece):
+    h, w = piece.shape[:2]
+    s = min(1.0, WORK_SIDE / max(h, w))
+    return (media.resize(piece, round(w * s), round(h * s)) if s < 1 else piece), s
+
+
+def measure(piece, scene, located):
+    """Flatten the scene's copy of the piece at work resolution; return
+    (work_piece, flat_ref, scale)."""
+    wp, s = _work_piece(piece)
+    Hs = locate.scaled_H(located.H, s)
+    flat = locate.flatten(scene, Hs, (wp.shape[1], wp.shape[0]))
+    return wp, flat, s
+
+
+def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, located=None):
+    located = located or locate.find_piece(piece, scene)
+    area = 0.0
+    if located.ok:
+        area = locate.quad_area(located.quad) / float(scene.shape[0] * scene.shape[1])
+    if not located.ok:
+        return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, f"not-found:{located.reason}")
+    if area < min_area:
+        return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, "area")
+    wp, flat, _ = measure(piece, scene, located)
+    radius = max(4, round(max(wp.shape[:2]) / 24))
+    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat), radius)
+    relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
+    # Compare the scene's copy against the relit original: lighting explained,
+    # only content differences remain.
+    bands = detail_bands(relit, flat)
+    corr = float(np.mean(bands))
+    tiles = tile_correlations(relit, flat)
+    worst = float(min(tiles)) if tiles else corr
+    if corr < min_corr:
+        return GateResult(False, corr, worst, bands, area, located, "detail-drift")
+    if worst < min_tile:
+        return GateResult(False, corr, worst, bands, area, located, "local-drift")
+    return GateResult(True, corr, worst, bands, area, located, "")
+
+
+def piece_mask(shape, H, piece_size, feather=1.5, inset=1.0):
+    """Soft mask of the piece region in scene pixels (1 inside)."""
+    w, h = piece_size
+    m = cv2.warpPerspective(np.ones((int(h), int(w)), np.float32), H, (shape[1], shape[0]), flags=cv2.INTER_LINEAR)
+    if inset > 0:
+        k = max(1, int(round(inset)))
+        m = cv2.erode(m, np.ones((2 * k + 1, 2 * k + 1), np.uint8))
+    if feather > 0:
+        m = cv2.GaussianBlur(m, (0, 0), feather)
+    return np.clip(m, 0, 1)
+
+
+def relight(piece, scene, located):
+    """Return the original piece relit by the scene, at full piece resolution,
+    in linear light, plus the (a, b) fields at full resolution."""
+    wp, flat, _ = measure(piece, scene, located)
+    radius = max(4, round(max(wp.shape[:2]) / 24))
+    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat), radius)
+    h, w = piece.shape[:2]
+    a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+    b = cv2.resize(b, (w, h), interpolation=cv2.INTER_LINEAR)
+    return a * color.srgb_to_linear(piece) + b, (a, b)
+
+
+def warp_into(piece_lin, H, scene_shape):
+    """Warp a (possibly much larger) piece image into scene pixels without aliasing."""
+    h, w = piece_lin.shape[:2]
+    footprint = np.sqrt(locate.quad_area(cv2.perspectiveTransform(locate.corners(w, h)[None], H)[0]) / (w * h))
+    src, Hs = piece_lin, H
+    if footprint < 0.75:
+        s = min(1.0, footprint * 1.5)
+        src = media.resize(piece_lin, max(2, round(w * s)), max(2, round(h * s)))
+        Hs = locate.scaled_H(H, s)
+    return cv2.warpPerspective(src, Hs, (scene_shape[1], scene_shape[0]), flags=cv2.INTER_LINEAR)
+
+
+def repair(piece, scene, located):
+    """Scene with the relit original pixels in the piece region.
+    Returns (repaired_srgb, mask, relit_lin)."""
+    relit_lin, _ = relight(piece, scene, located)
+    warped = warp_into(relit_lin, located.H, scene.shape)
+    mask = piece_mask(scene.shape, located.H, (piece.shape[1], piece.shape[0]))
+    out_lin = color.srgb_to_linear(scene) * (1 - mask[..., None]) + warped * mask[..., None]
+    return color.linear_to_srgb(out_lin), mask, relit_lin
+
+
+def verify(piece, final, located):
+    """Detail correlation between the original and the final image's piece region
+    (lighting explained away first)."""
+    wp, flat, _ = measure(piece, final, located)
+    radius = max(4, round(max(wp.shape[:2]) / 24))
+    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat), radius)
+    relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
+    return detail_correlation(relit, flat)
