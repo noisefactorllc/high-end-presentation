@@ -42,12 +42,13 @@ class GateResult:
 def lighting_model(orig_lin, ref_lin, grid=12, eps=4e-4):
     """Smooth lighting fields (a, b) with ref ~= a * orig + b, per channel.
 
-    Fit per tile on a coarse grid, reject outlier tiles with a median filter,
-    then smooth and upsample. Scene light is smooth; anything sharper is the
-    model changing content, and must not leak into the lighting."""
+    Per tile, match the mean and spread of the blurred images (moment matching,
+    not regression): it does not depend on the two images lining up exactly,
+    so a model that shifted or zoomed the piece cannot read as a loss of
+    contrast. Outlier tiles are rejected with a median filter; the fields are
+    smoothed and upsampled. Scene light is smooth; sharper differences are the
+    model changing content and must not leak into the lighting."""
     h, w = orig_lin.shape[:2]
-    # Fit on blurred images: fine texture the model redrew must not read as a
-    # loss of contrast.
     sig = max(1.0, 0.006 * max(h, w))
     orig_lin = cv2.GaussianBlur(orig_lin, (0, 0), sig)
     ref_lin = cv2.GaussianBlur(ref_lin, (0, 0), sig)
@@ -61,14 +62,12 @@ def lighting_model(orig_lin, ref_lin, grid=12, eps=4e-4):
             o = orig_lin[sl].reshape(-1, 3)
             r = ref_lin[sl].reshape(-1, 3)
             mo, mr = o.mean(0), r.mean(0)
-            var = o.var(0)
-            cov = ((o - mo) * (r - mr)).mean(0)
-            a = cov / (var + eps)
-            # flat tiles carry no slope information: fall back to a pure gain
+            so, sr = o.std(0), r.std(0)
+            a = np.sqrt((sr * sr + eps) / (so * so + eps))
+            # flat tiles carry no contrast information: fall back to a pure gain
             gain = (mr + 1e-4) / (mo + 1e-4)
-            t = var / (var + eps)
-            a = t * a + (1 - t) * gain
-            a = np.clip(a, 0.15, 4.0)
+            t = so * so / (so * so + eps)
+            a = np.clip(t * a + (1 - t) * gain, 0.15, 4.0)
             A[i, j] = a
             Bf[i, j] = np.clip(mr - a * mo, -0.05, 0.25)
     A = cv2.medianBlur(A, 3)
@@ -250,15 +249,20 @@ def warp_into(piece_lin, H, scene_shape):
     return cv2.warpPerspective(src, Hs, (scene_shape[1], scene_shape[0]), flags=cv2.INTER_LINEAR)
 
 
+REFLECTION_SIGMA = 0.08   # of the piece's long side: glass reflections are soft
+REFLECTION_STRENGTH = 0.6
+
+
 def reflection(piece, scene, located):
     """Soft light the scene adds over the piece (glass reflections), at full
-    piece resolution, linear. The positive residual after the lighting model,
-    blurred so that no piece detail can pass through."""
+    piece resolution, linear. Only the broad, positive part of what the lighting
+    model leaves unexplained: a heavy blur keeps the model's own version of the
+    piece (redrawn or shifted content) from passing through."""
     wp, flat, _ = measure(piece, scene, located)
     orig_lin, ref_lin = color.srgb_to_linear(wp), color.srgb_to_linear(flat)
     a, b = lighting_model(orig_lin, ref_lin)
-    R = np.maximum(ref_lin - (a * orig_lin + b), 0)
-    R = cv2.GaussianBlur(R, (0, 0), max(1.5, 0.012 * max(wp.shape[:2])))
+    R = cv2.GaussianBlur(ref_lin - (a * orig_lin + b), (0, 0), REFLECTION_SIGMA * max(wp.shape[:2]))
+    R = np.maximum(R, 0) * REFLECTION_STRENGTH
     h, w = piece.shape[:2]
     return cv2.resize(R, (w, h), interpolation=cv2.INTER_LINEAR)
 
