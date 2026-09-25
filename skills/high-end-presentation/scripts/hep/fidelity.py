@@ -202,8 +202,23 @@ def locate_screens(piece, scene, count, min_corr=0.35, max_overlap=0.2):
         if corr >= min_corr:
             scored.append((corr - max(0.0, (dab - 20.0) / 40.0), corr, asp, q, H))
     scored.sort(key=lambda t: -t[0])
+    # Nested candidates (tube inside bezel inside cabinet): the innermost one
+    # that still scores nearly as well is the screen.
+    kept = []
+    for cand in scored:
+        area = locate.quad_area(cand[3])
+        replaced = False
+        for i, k in enumerate(kept):
+            if locate.quad_overlap(cand[3], k[3], scene.shape) > 0.8:
+                if area < 0.9 * locate.quad_area(k[3]) and cand[0] >= k[0] - 0.08:
+                    kept[i] = cand
+                replaced = True
+                break
+        if not replaced:
+            kept.append(cand)
+    kept.sort(key=lambda t: -t[0])
     chosen = []
-    for sc, corr, asp, q, H in scored:
+    for sc, corr, asp, q, H in kept:
         if all(locate.quad_overlap(q, c[0].quad, scene.shape) <= max_overlap for c in chosen):
             chosen.append((locate.Located(True, H, np.asarray(q, np.float64), 0, 0, "screen"), asp, corr))
         if len(chosen) >= count:
