@@ -129,3 +129,39 @@ def test_bad_inputs_rejected(tmp_path):
         stages.init(tmp_path / "j", __file__, "x", energy="frantic")
     with pytest.raises(JobError, match="not found"):
         stages.init(tmp_path / "j", tmp_path / "nope.png", "x")
+
+
+def test_moving_piece_with_echo(setup):
+    tmp, _, fake = setup
+    base = textured_piece(300, 400, seed=7)
+    clip = tmp / "art.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 24, (400, 300))
+    for i in range(48):
+        f = np.roll(base, i * 2, axis=1) if i >= 24 else base  # holds still, then drifts
+        vw.write((f[..., ::-1] * 255 + 0.5).astype(np.uint8))
+    vw.release()
+    root = tmp / "vjob"
+    stages.init(root, clip, "gallery", echo=True)
+    job = Job(root)
+    a = stages.analyze(job)["analysis"]
+    assert a["source"]["kind"] == "video"
+    assert (root / "piece-echo.png").exists() and (root / "piece-preview.jpg").exists()
+    stages.brief(job, json.loads(_brief(tmp).read_text()))
+    assert stages.still(job)["passed"]
+    stages.video(job)
+    stages.develop(job)
+    assert stages.finish(job)["final_verify"] >= stages.FINAL_MIN_CORR
+
+
+def test_explicit_frame_is_used(setup):
+    tmp, _, _ = setup
+    clip = tmp / "c.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 24, (64, 48))
+    for i in range(10):
+        vw.write(np.full((48, 64, 3), i * 25, np.uint8))
+    vw.release()
+    stages.init(tmp / "fj", clip, "x", frame=7)
+    job = Job(tmp / "fj")
+    stages.analyze(job)
+    assert job["analysis"]["source"]["frame_index"] == 7
+    assert abs(media.load_image(tmp / "fj/piece.png").mean() - 175 / 255) < 0.02
