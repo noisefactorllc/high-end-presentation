@@ -12,6 +12,13 @@ import numpy as np
 from . import color, locate, media
 
 WORK_SIDE = 1536  # resolution for measuring (not for output)
+# The gate compares composition and colour: image models redraw fine texture,
+# and the repair restores the original pixels anyway. The final check compares
+# fine detail (these band-pass scales, Gaussian sigmas at 512 px), because by
+# then every pixel of the piece must be the artist's.
+FINE_BANDS = ((0.8, 2.4), (2.4, 7.2))
+COMP_SIDE = 384
+COMP_SIGMAS = (6.0, 16.0)  # blur scales for composition, at COMP_SIDE
 
 
 @dataclass
@@ -19,16 +26,15 @@ class GateResult:
     passed: bool
     corr: float
     worst: float
-    bands: list
+    color_shift: float
     area: float
     located: locate.Located
     reason: str
-
     aspect_error: float = 0.0
 
     def to_json(self):
         return {"passed": self.passed, "corr": round(self.corr, 4), "worst_tile": round(self.worst, 4),
-                "bands": [round(b, 4) for b in self.bands], "area": round(self.area, 4),
+                "color_shift": round(self.color_shift, 2), "area": round(self.area, 4),
                 "aspect_error": round(self.aspect_error, 4), "located": self.located.to_json(),
                 "reason": self.reason}
 
@@ -40,6 +46,11 @@ def lighting_model(orig_lin, ref_lin, grid=12, eps=4e-4):
     then smooth and upsample. Scene light is smooth; anything sharper is the
     model changing content, and must not leak into the lighting."""
     h, w = orig_lin.shape[:2]
+    # Fit on blurred images: fine texture the model redrew must not read as a
+    # loss of contrast.
+    sig = max(1.0, 0.006 * max(h, w))
+    orig_lin = cv2.GaussianBlur(orig_lin, (0, 0), sig)
+    ref_lin = cv2.GaussianBlur(ref_lin, (0, 0), sig)
     gy = max(2, round(grid * h / max(h, w)))
     gx = max(2, round(grid * w / max(h, w)))
     A = np.ones((gy, gx, 3), np.float32)
@@ -73,7 +84,7 @@ def _band(g, s1, s2):
     return cv2.GaussianBlur(g, (0, 0), s1) - cv2.GaussianBlur(g, (0, 0), s2)
 
 
-def detail_bands(x, y, side=512):
+def detail_bands(x, y, side=512, bands=FINE_BANDS):
     """Band-pass normalized correlation of luma at two scales."""
     h, w = x.shape[:2]
     s = side / max(h, w)
@@ -81,7 +92,7 @@ def detail_bands(x, y, side=512):
     gx = color.luma(cv2.resize(x, size, interpolation=cv2.INTER_AREA))
     gy = color.luma(cv2.resize(y, size, interpolation=cv2.INTER_AREA))
     out = []
-    for s1, s2 in ((0.8, 2.4), (2.4, 7.2)):
+    for s1, s2 in bands:
         bx, by = _band(gx, s1, s2), _band(gy, s1, s2)
         bx -= bx.mean()
         by -= by.mean()
@@ -90,33 +101,8 @@ def detail_bands(x, y, side=512):
     return out
 
 
-def detail_correlation(x, y):
-    return float(np.mean(detail_bands(x, y)))
-
-
-def tile_correlations(x, y, grid=4, side=512, min_energy=0.15):
-    """Band-pass correlation per tile. Tiles with little detail in x (flat
-    areas, where correlation means nothing) are skipped. Returns a list."""
-    h, w = x.shape[:2]
-    s = side / max(h, w)
-    size = (max(8, round(w * s)), max(8, round(h * s)))
-    gx = color.luma(cv2.resize(x, size, interpolation=cv2.INTER_AREA))
-    gy = color.luma(cv2.resize(y, size, interpolation=cv2.INTER_AREA))
-    bx = _band(gx, 0.8, 2.4) + _band(gx, 2.4, 7.2)
-    by = _band(gy, 0.8, 2.4) + _band(gy, 2.4, 7.2)
-    H, W = bx.shape
-    tiles, energy = [], []
-    for i in range(grid):
-        for j in range(grid):
-            sl = (slice(i * H // grid, (i + 1) * H // grid), slice(j * W // grid, (j + 1) * W // grid))
-            tx, ty = bx[sl] - bx[sl].mean(), by[sl] - by[sl].mean()
-            ex = float((tx * tx).sum())
-            den = np.sqrt(ex * float((ty * ty).sum())) + 1e-12
-            tiles.append(float((tx * ty).sum() / den))
-            energy.append(ex)
-    energy = np.array(energy)
-    keep = energy >= min_energy * np.median(energy)
-    return [t for t, k in zip(tiles, keep) if k]
+def detail_correlation(x, y, bands=FINE_BANDS):
+    return float(np.mean(detail_bands(x, y, bands=bands)))
 
 
 def _work_piece(piece):
@@ -134,6 +120,72 @@ def measure(piece, scene, located):
     return wp, flat, s
 
 
+def _ncc(a, b):
+    a = a - a.mean()
+    b = b - b.mean()
+    return float((a * b).sum() / (np.sqrt((a * a).sum() * (b * b).sum()) + 1e-12))
+
+
+def composition(piece, scene, H, side=COMP_SIDE, grid=3):
+    """How well the scene under H shows this piece, ignoring texture and light:
+    (correlation of blurred luma, worst tile correlation, colour distance)."""
+    h, w = piece.shape[:2]
+    s = side / max(h, w)
+    small = media.resize(piece, max(8, round(w * s)), max(8, round(h * s)))
+    flat = locate.flatten(scene, locate.scaled_H(H, s), (small.shape[1], small.shape[0]))
+    lp, lf = color.luma(small), color.luma(flat)
+    corr = float(np.mean([_ncc(cv2.GaussianBlur(lp, (0, 0), g), cv2.GaussianBlur(lf, (0, 0), g))
+                          for g in COMP_SIGMAS]))
+    bp, bf = cv2.GaussianBlur(lp, (0, 0), COMP_SIGMAS[0]), cv2.GaussianBlur(lf, (0, 0), COMP_SIGMAS[0])
+    hh, ww = bp.shape
+    tiles = []
+    for i in range(grid):
+        for j in range(grid):
+            sl = (slice(i * hh // grid, (i + 1) * hh // grid), slice(j * ww // grid, (j + 1) * ww // grid))
+            if bp[sl].std() > 0.01:  # flat tiles say nothing about composition
+                tiles.append(_ncc(bp[sl], bf[sl]))
+    worst = min(tiles) if tiles else corr
+    ab_p = color.rgb_to_lab(small)[..., 1:].reshape(-1, 2).mean(0)
+    ab_f = color.rgb_to_lab(flat)[..., 1:].reshape(-1, 2).mean(0)
+    return corr, float(worst), float(np.linalg.norm(ab_p - ab_f))
+
+
+def _score(piece, scene, H):
+    corr, _, dab = composition(piece, scene, H)
+    return corr - max(0.0, (dab - 20.0) / 40.0)
+
+
+def locate_piece(piece, scene, min_inliers=12, top=3):
+    """Find the piece: feature matches first, then rectangles in the scene
+    (screens, frames) as candidates; refine each by ECC and keep the placement
+    whose detail matches best."""
+    h, w = piece.shape[:2]
+    cands = []
+    sift = locate.find_piece(piece, scene, min_inliers=min_inliers)
+    if sift.ok:
+        cands.append(("sift", sift.H, sift.inliers, sift.matches))
+    quads = locate.candidate_quads(scene)
+    ranked = []
+    for q in quads:
+        H = cv2.getPerspectiveTransform(locate.corners(w, h).astype(np.float32), np.float32(q)).astype(np.float64)
+        ranked.append((_score(piece, scene, H), H))
+    ranked.sort(key=lambda t: -t[0])
+    cands += [("quad", H, 0, 0) for _, H in ranked[:top]]
+    best = None
+    for how, H, inl, mat in cands:
+        Hr, ok = locate.refine(piece, scene, H)
+        for Hc in ((Hr, H) if ok else (H,)):
+            quad = cv2.perspectiveTransform(locate.corners(w, h)[None], Hc)[0]
+            if not locate.is_convex(quad):
+                continue
+            sc = _score(piece, scene, Hc)
+            if best is None or sc > best[0]:
+                best = (sc, locate.Located(True, Hc, quad, inl, mat, how))
+    if best is None:
+        return locate.Located(False, reason=sift.reason or "no-candidates")
+    return best[1]
+
+
 def aspect_error(piece, scene, located):
     """Relative error of the piece's apparent physical proportions."""
     est = locate.rectangle_aspect(located.quad, (scene.shape[1], scene.shape[0]))
@@ -141,32 +193,26 @@ def aspect_error(piece, scene, located):
     return abs(est / true - 1.0)
 
 
-def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, max_aspect_error=0.04, located=None):
-    located = located or locate.find_piece(piece, scene)
+def gate(piece, scene, *, min_corr=0.5, min_tile=0.15, max_color_shift=35.0, min_area=0.02,
+         max_aspect_error=0.04, located=None):
+    """Is this the piece, whole, in the right proportions? Checks placement,
+    composition, and colour. Fine texture is not checked: the repair restores
+    the original pixels, and the final check verifies them."""
+    located = located or locate_piece(piece, scene)
     area = 0.0
     if located.ok:
         area = locate.quad_area(located.quad) / float(scene.shape[0] * scene.shape[1])
     if not located.ok:
-        return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, f"not-found:{located.reason}")
+        return GateResult(False, 0.0, 0.0, 0.0, area, located, f"not-found:{located.reason}")
     if area < min_area:
-        return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, "area")
+        return GateResult(False, 0.0, 0.0, 0.0, area, located, "area")
     asp = aspect_error(piece, scene, located)
-    if asp > max_aspect_error:
-        return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, "aspect", asp)
-    wp, flat, _ = measure(piece, scene, located)
-    a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
-    relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
-    # Compare the scene's copy against the relit original: lighting explained,
-    # only content differences remain.
-    bands = detail_bands(relit, flat)
-    corr = float(np.mean(bands))
-    tiles = tile_correlations(relit, flat)
-    worst = float(min(tiles)) if tiles else corr
-    if corr < min_corr:
-        return GateResult(False, corr, worst, bands, area, located, "detail-drift", asp)
-    if worst < min_tile:
-        return GateResult(False, corr, worst, bands, area, located, "local-drift", asp)
-    return GateResult(True, corr, worst, bands, area, located, "", asp)
+    corr, worst, dab = composition(piece, scene, located.H)
+    for failed, reason in ((asp > max_aspect_error, "aspect"), (dab > max_color_shift, "color"),
+                           (corr < min_corr, "composition"), (worst < min_tile, "local-composition")):
+        if failed:
+            return GateResult(False, corr, worst, dab, area, located, reason, asp)
+    return GateResult(True, corr, worst, dab, area, located, "", asp)
 
 
 def piece_mask(shape, H, piece_size, feather=1.5, inset=1.0):

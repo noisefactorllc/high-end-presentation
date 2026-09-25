@@ -206,3 +206,28 @@ def test_missing_second_piece_fails_the_gate(tmp_path, monkeypatch):
     stages.brief(job, json.loads(_brief(tmp_path).read_text()))
     with pytest.raises(stages.GateFailed, match="piece 1"):
         stages.still(job, attempts=1)
+
+
+def test_same_request_attempts_are_rechecked_not_regenerated(tmp_path, monkeypatch):
+    left, right, good = _pair_scene()
+    fake = FakeClient(tmp_path, plain_scene(640, 512))  # first render loses both pieces
+    monkeypatch.setattr(stages, "_client", lambda: fake)
+    root = tmp_path / "pair"
+    stages.init(root, [media.save_image(tmp_path / "l.png", left), media.save_image(tmp_path / "r.png", right)], "x")
+    job = Job(root)
+    stages.analyze(job)
+    stages.brief(job, json.loads(_brief(tmp_path).read_text()))
+    with pytest.raises(stages.GateFailed):
+        stages.still(job, attempts=1)
+    calls = len(fake.calls)
+    # the saved attempt now passes (as when the gate improves): no new render
+    media.save_image(root / "still/attempt-0.png", good)
+    out = stages.still(job, attempts=1)
+    assert out["passed"] and out["attempt"] == 0 and len(fake.calls) == calls
+    # a changed brief never reuses old attempts
+    b = json.loads(_brief(tmp_path).read_text())
+    b["scene"] = "A different room."
+    stages.brief(job, b)
+    fake.scene_img = good
+    out = stages.still(job, attempts=1)
+    assert out["attempt"] == 1 and len(fake.calls) == calls + 1

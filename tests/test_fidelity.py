@@ -26,17 +26,30 @@ def test_relit_passes(piece, scene, quad):
     assert g.corr > 0.8
 
 
-def test_redrawn_piece_fails(piece, scene, quad):
+def test_redrawn_texture_passes_but_new_composition_fails(piece, scene, quad):
     other = textured_piece(seed=9)
-    # keep the left two thirds intact (so the piece locates); redraw the right third
+    # fine texture redrawn everywhere: the gate accepts it (the repair restores the pixels)
+    retextured = cv2.GaussianBlur(piece, (0, 0), 3) + (other - cv2.GaussianBlur(other, (0, 0), 3))
+    composed, _ = place(np.clip(retextured, 0, 1), scene, quad)
+    assert fidelity.gate(piece, composed).passed
+    # the right third replaced by different content: the gate rejects it
     mixed = piece.copy()
     x0 = piece.shape[1] * 2 // 3
-    base = cv2.GaussianBlur(piece, (0, 0), 6)
-    mixed[:, x0:] = (base + other - cv2.GaussianBlur(other, (0, 0), 6))[:, x0:]
-    composed, _ = place(np.clip(mixed, 0, 1), scene, quad)
+    noise = np.random.default_rng(3).random(piece.shape).astype(np.float32)
+    unrelated = np.clip(0.5 + 3.0 * (cv2.GaussianBlur(noise, (0, 0), 8) - 0.5), 0, 1)
+    mixed[:, x0:] = unrelated[:, x0:]
+    composed, _ = place(mixed, scene, quad)
     g = fidelity.gate(piece, composed)
     assert g.located.ok
-    assert not g.passed and g.reason in ("detail-drift", "local-drift")
+    assert not g.passed and g.reason in ("composition", "local-composition")
+
+
+def test_wrong_colours_fail(piece, scene, quad):
+    warm = np.clip(piece * np.float32([1.0, 0.55, 0.25]), 0, 1)  # an orange-dominant piece
+    cool = warm[..., ::-1].copy()  # same structure, blue-dominant
+    composed, _ = place(cool, scene, quad)
+    g = fidelity.gate(warm, composed)
+    assert not g.passed and g.reason == "color"
 
 
 def test_small_piece_fails_on_area(piece, scene):

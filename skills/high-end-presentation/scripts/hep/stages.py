@@ -9,8 +9,6 @@ from . import analyze as analyze_mod
 from . import color, endpoints, fal, fidelity, grade, lens, locate, media, prompts, timelapse
 from .job import Job, JobError
 
-GATE_MIN_CORR = 0.6
-GATE_MIN_TILE = 0.35
 FINAL_MIN_CORR = 0.85
 ECHO_STRENGTH = 0.15
 
@@ -136,36 +134,57 @@ def still(job, attempts=3, timeout=600):
     client = _client()
     uris = [fal.data_uri(p, max_side=2048) for p in pieces]
     history = job.data.setdefault("still_attempts", [])
-    for n in range(len(history), len(history) + attempts):
-        args = endpoints.image_args(ep, prompt, uris, job["aspect"], job["resolution"], seed=1000 + n)
-        res = client.run(ep, args, job.data["fal"], f"still-{n}", timeout, job.save)
-        path = fal.download(endpoints.image_url(res), job.file("still", f"attempt-{n}.png"))
+    digest = fal.args_digest({"prompt": prompt, "aspect": job["aspect"], "resolution": job["resolution"],
+                              "endpoint": ep, "pieces": [fal.args_digest(u) for u in uris]})
+
+    def evaluate(n, path):
         scene = media.load_image(path)
-        gates = [fidelity.gate(p, scene, min_corr=GATE_MIN_CORR, min_tile=GATE_MIN_TILE) for p in pieces]
+        gates = [fidelity.gate(p, scene) for p in pieces]
         failed = [(i, g) for i, g in enumerate(gates) if not g.passed]
         reason = "; ".join(f"piece {i}: {g.reason}" for i, g in failed)
         overlap = _overlap([g.located.quad for g in gates], scene.shape) if not failed and len(gates) > 1 else 0.0
         if not failed and overlap > MAX_QUAD_OVERLAP:
             reason = f"pieces-overlap:{overlap:.2f}"
-        history.append({"attempt": n, "file": str(path), "passed": not reason, "reason": reason,
-                        "pieces": [g.to_json() for g in gates]})
+        return scene, gates, reason
+
+    def accept(n, path, scene, gates):
+        plate, mask = scene, np.zeros(scene.shape[:2], np.float32)
+        for p, g in zip(pieces, gates):
+            plate, m, _ = fidelity.repair(p, plate, g.located, glazed=job.get("glazed", False))
+            mask = np.maximum(mask, m)
+        media.save_image(job.file("still", "plate.png"), plate)
+        media.save_image(job.file("still", "plate-preview.jpg"), plate)
+        np.save(job.file("still", "mask.npy"), mask.astype(np.float16))
+        job.data["located"] = [g.located.to_json() for g in gates]
+        job.data["plate_size"] = [plate.shape[1], plate.shape[0]]
+        summary = [{"composition": round(g.corr, 4), "worst_tile": round(g.worst, 4),
+                    "color_shift": round(g.color_shift, 2), "aspect_error": round(g.aspect_error, 4)}
+                   for g in gates]
+        job.done("still", attempt=n, pieces=summary)
+        return {"passed": True, "attempt": n, "pieces": summary,
+                "plate_preview": str(job.file("still", "plate-preview.jpg")), "reference": str(path),
+                "next": "look at plate-preview.jpg; then `draft` for a preview or `video`"}
+
+    # Earlier attempts made from this exact request are re-checked first (the
+    # gate may have improved); attempts from another brief are never reused.
+    for h in history:
+        if h.get("digest") == digest and Path(h["file"]).exists():
+            scene, gates, reason = evaluate(h["attempt"], h["file"])
+            h.update(passed=not reason, reason=reason, pieces=[g.to_json() for g in gates])
+            job.save()
+            if not reason:
+                return accept(h["attempt"], h["file"], scene, gates)
+
+    for n in range(len(history), len(history) + attempts):
+        args = endpoints.image_args(ep, prompt, uris, job["aspect"], job["resolution"], seed=1000 + n)
+        res = client.run(ep, args, job.data["fal"], f"still-{n}", timeout, job.save)
+        path = fal.download(endpoints.image_url(res), job.file("still", f"attempt-{n}.png"))
+        scene, gates, reason = evaluate(n, path)
+        history.append({"attempt": n, "file": str(path), "digest": digest, "passed": not reason,
+                        "reason": reason, "pieces": [g.to_json() for g in gates]})
         job.save()
         if not reason:
-            plate, mask = scene, np.zeros(scene.shape[:2], np.float32)
-            for p, g in zip(pieces, gates):
-                plate, m, _ = fidelity.repair(p, plate, g.located, glazed=job.get("glazed", False))
-                mask = np.maximum(mask, m)
-            media.save_image(job.file("still", "plate.png"), plate)
-            media.save_image(job.file("still", "plate-preview.jpg"), plate)
-            np.save(job.file("still", "mask.npy"), mask.astype(np.float16))
-            job.data["located"] = [g.located.to_json() for g in gates]
-            job.data["plate_size"] = [plate.shape[1], plate.shape[0]]
-            summary = [{"corr": round(g.corr, 4), "worst_tile": round(g.worst, 4),
-                        "aspect_error": round(g.aspect_error, 4)} for g in gates]
-            job.done("still", attempt=n, pieces=summary)
-            return {"passed": True, "attempt": n, "pieces": summary,
-                    "plate_preview": str(job.file("still", "plate-preview.jpg")), "reference": str(path),
-                    "next": "look at plate-preview.jpg; then `draft` for a preview or `video`"}
+            return accept(n, path, scene, gates)
     raise GateFailed(json.dumps({"passed": False, "attempts": [
         {"attempt": a["attempt"], "file": a["file"], "reason": a["reason"]} for a in history[-attempts:]]}))
 
