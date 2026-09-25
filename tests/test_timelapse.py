@@ -70,28 +70,47 @@ def test_stationary_viewer_more_solid_than_passerby(tmp_path):
     assert dark_viewer > 2 * dark_passer > 0
 
 
-def test_quiet_keeps_piece_detail(tmp_path):
+def _piece_scene():
     plate_bg = _scene_with_texture()
     piece = textured_piece(120, 160, seed=4)
     plate, H = place(piece, plate_bg, [[100, 60], [260, 60], [260, 180], [100, 180]])
     mask = fidelity.piece_mask(plate.shape, H, (160, 120))
+    loc = locate.Located(True, H, locate.corners(160, 120), 0, 0, "")
+    return piece, plate, mask, loc
+
+
+def test_people_cross_the_piece_as_figures(tmp_path):
+    piece, plate, mask, loc = _piece_scene()
     frames = []
     for i in range(40):
         f = plate.copy()
-        x = 20 + i * 9  # a figure walking across, in front of the piece
-        cv2.rectangle(f, (x, 40), (x + 30, 200), (0.05, 0.05, 0.05), -1)
+        if 0 < i < 39:
+            x = 20 + i * 9  # a figure walking across, in front of the piece
+            cv2.rectangle(f, (x, 40), (x + 30, 300), (0.05, 0.05, 0.05), -1)
         frames.append(f)
     st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
     out, rep = timelapse.develop(plate, st, mask, "quiet")
     srgb = color.linear_to_srgb(out)
     inner = mask > 0.99
-    # detail inside the piece is the plate's (lighting only), not the walker's
-    loc = locate.Located(True, H, locate.corners(160, 120), 0, 0, "")
-    assert fidelity.verify(piece, srgb, loc) > 0.9
-    assert rep["occlusion_raw"] > 0 and any("occlusion-removed" in n for n in rep["notes"])
-    # but bustling lets a faint ghost through
-    out_b, _ = timelapse.develop(plate, st, mask, "bustling")
-    assert np.abs(color.linear_to_srgb(out_b)[inner] - srgb[inner]).mean() > 0.002
+    # the figure shows over the piece, like everywhere else
+    assert (plate[inner] - srgb[inner]).mean() > 0.02
+    assert rep["piece_covered"] > 0
+    # the uncovered parts of the piece are still the original
+    assert fidelity.verify(piece, srgb, loc, exclude=rep["activity"].astype(np.float32)) > 0.9
+
+
+def test_distortion_inside_the_frame_is_ignored(tmp_path):
+    piece, plate, mask, loc = _piece_scene()
+    frames = []
+    for i in range(40):
+        f = plate.copy()
+        if 5 < i < 35:  # the video model "redraws" the artwork mid-clip
+            f[70:170, 110:250] = np.roll(f[70:170, 110:250], 7 + i % 5, axis=1)
+        frames.append(f)
+    st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
+    out, _ = timelapse.develop(plate, st, mask, "bustling")
+    srgb = color.linear_to_srgb(out)
+    assert fidelity.verify(piece, srgb, loc) > 0.95
 
 
 def test_registration_handles_scaled_cropped_video(tmp_path):

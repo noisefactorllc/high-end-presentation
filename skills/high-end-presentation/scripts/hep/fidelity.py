@@ -204,20 +204,43 @@ def warp_into(piece_lin, H, scene_shape):
     return cv2.warpPerspective(src, Hs, (scene_shape[1], scene_shape[0]), flags=cv2.INTER_LINEAR)
 
 
-def repair(piece, scene, located):
-    """Scene with the relit original pixels in the piece region.
+def reflection(piece, scene, located):
+    """Soft light the scene adds over the piece (glass reflections), at full
+    piece resolution, linear. The positive residual after the lighting model,
+    blurred so that no piece detail can pass through."""
+    wp, flat, _ = measure(piece, scene, located)
+    orig_lin, ref_lin = color.srgb_to_linear(wp), color.srgb_to_linear(flat)
+    a, b = lighting_model(orig_lin, ref_lin)
+    R = np.maximum(ref_lin - (a * orig_lin + b), 0)
+    R = cv2.GaussianBlur(R, (0, 0), max(1.5, 0.012 * max(wp.shape[:2])))
+    h, w = piece.shape[:2]
+    return cv2.resize(R, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def repair(piece, scene, located, glazed=False):
+    """Scene with the relit original pixels in the piece region. For a glazed
+    display, the scene's glass reflections stay over the piece.
     Returns (repaired_srgb, mask, relit_lin)."""
     relit_lin, _ = relight(piece, scene, located)
+    if glazed:
+        relit_lin = relit_lin + reflection(piece, scene, located)
     warped = warp_into(relit_lin, located.H, scene.shape)
     mask = piece_mask(scene.shape, located.H, (piece.shape[1], piece.shape[0]))
     out_lin = color.srgb_to_linear(scene) * (1 - mask[..., None]) + warped * mask[..., None]
     return color.linear_to_srgb(out_lin), mask, relit_lin
 
 
-def verify(piece, final, located):
-    """Detail correlation between the original and the final image's piece region
-    (lighting explained away first)."""
-    wp, flat, _ = measure(piece, final, located)
+def verify(piece, final, located, exclude=None):
+    """Detail correlation between the original and the final image's piece
+    region, with lighting explained away first. `exclude` (scene-sized, 0-1)
+    marks pixels where people or reflected light legitimately cover the piece;
+    those pixels are left out of the comparison."""
+    wp, flat, s = measure(piece, final, located)
     a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
     relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
+    if exclude is not None:
+        Hs = locate.scaled_H(located.H, s)
+        m = locate.flatten(np.asarray(exclude, np.float32), Hs, (wp.shape[1], wp.shape[0]))
+        m = np.clip(cv2.GaussianBlur(m, (0, 0), 2.0) * 2.0, 0, 1)[..., None]
+        flat = flat * (1 - m) + relit * m
     return detail_correlation(relit, flat)

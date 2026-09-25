@@ -16,6 +16,9 @@ FINAL_MIN_CORR = 0.85
 ECHO_STRENGTH = 0.15
 
 
+GLAZED_SCENES = {"storefront", "glass-display"}
+
+
 class GateFailed(RuntimeError):
     pass
 
@@ -39,6 +42,7 @@ def init(root, piece, prompt, *, scene="freeform", energy="calm", aspect="4:5", 
         "piece": str(piece), "prompt": prompt, "scene": scene, "energy": energy, "aspect": aspect,
         "resolution": resolution, "duration": int(duration), "echo": bool(echo), "frame": frame,
         "name": name or piece.stem,
+        "glazed": scene in GLAZED_SCENES,
         "endpoints": {"image": image_endpoint or endpoints.IMAGE_DEFAULT,
                       "video": video_endpoint or endpoints.VIDEO_DEFAULT,
                       "depth": endpoints.DEPTH_DEFAULT},
@@ -75,6 +79,8 @@ def brief(job, data):
     if missing:
         raise JobError(f"brief is missing: {', '.join(sorted(missing))}")
     job.data["brief"] = data
+    if "glazed" in data:
+        job.data["glazed"] = bool(data["glazed"])
     job.done("brief")
     return {"brief": data, "next": "still (or draft after still)"}
 
@@ -108,7 +114,7 @@ def still(job, attempts=3, timeout=600):
         history.append({"attempt": n, "file": str(path), **g.to_json()})
         job.save()
         if g.passed:
-            plate, mask, _ = fidelity.repair(piece, scene, g.located)
+            plate, mask, _ = fidelity.repair(piece, scene, g.located, glazed=job.get("glazed", False))
             media.save_image(job.file("still", "plate.png"), plate)
             media.save_image(job.file("still", "plate-preview.jpg"), plate)
             np.save(job.file("still", "mask.npy"), mask.astype(np.float16))
@@ -179,7 +185,8 @@ def develop(job):
     job.require("video")
     plate, mask = _plate(job)
     st = timelapse.stack(job.file("video", "clip.mp4"), plate)
-    out, report = timelapse.develop(plate, st, mask, job["energy"])
+    out, report = timelapse.develop(plate, st, mask, job["energy"], glazed=job.get("glazed", False))
+    np.save(job.file("develop", "activity.npy"), report.pop("activity"))
     np.save(job.file("develop", "exposure.npy"), out.astype(np.float16))
     media.save_image(job.file("develop", "exposure-preview.jpg"), np.clip(color.linear_to_srgb(out), 0, 1))
     job.data["develop"] = report
@@ -187,7 +194,7 @@ def develop(job):
     return {"report": report, "preview": str(job.file("develop", "exposure-preview.jpg")), "next": "finish"}
 
 
-DEVELOP_WARNINGS = ("camera-moved", "no-motion", "background:median", "occlusion-removed")
+DEVELOP_WARNINGS = ("camera-moved", "no-motion", "background:median")
 
 
 def _warnings(job):
@@ -202,7 +209,8 @@ def finish(job):
     exposure = np.load(job.file("develop", "exposure.npy")).astype(np.float32)
     out = _look(job, exposure, plate, mask, _look_opts(job))
     located = locate.Located.from_json(job["located"])
-    score = fidelity.verify(piece, out, located)
+    activity = np.load(job.file("develop", "activity.npy")).astype(np.float32)
+    score = fidelity.verify(piece, out, located, exclude=activity)
     if score < FINAL_MIN_CORR:
         raise GateFailed(json.dumps({"final_verify": round(score, 4), "min": FINAL_MIN_CORR,
                                      "message": "the finished piece region does not match the original"}))

@@ -12,10 +12,6 @@ ENERGY_MOTION = {
                  "stop in front of the artwork to look. Moving lights and shadows sweep across the space."),
 }
 
-KEEP_CLEAR = ("People stay beside the artwork or behind the camera's line to it; nobody walks between the "
-              "camera and the artwork.")
-
-
 def still_prompt(scene_text, piece_w, piece_h):
     from math import gcd
     g = gcd(piece_w, piece_h) or 1
@@ -31,8 +27,6 @@ def still_prompt(scene_text, piece_w, piece_h):
 
 def video_prompt(motion_text, energy):
     parts = [motion_text.strip() or ENERGY_MOTION[energy], ENERGY_MOTION[energy] if motion_text.strip() else ""]
-    if energy in ("quiet", "calm"):
-        parts.append(KEEP_CLEAR)
     parts.append(
         "Filmed in smooth slow motion: every movement is slow and continuous, with small changes from frame to "
         "frame. Locked-off static camera on a tripod: no camera movement, no zoom, no refocus. The artwork on "

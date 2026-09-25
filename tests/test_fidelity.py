@@ -72,3 +72,21 @@ def test_squeezed_piece_fails_on_aspect(piece, scene):
     g = fidelity.gate(piece, composed)
     assert g.located.ok
     assert not g.passed and g.reason == "aspect"
+
+
+def test_glazed_repair_keeps_glass_reflection(piece, scene, quad):
+    composed, H = place(piece, scene, quad)
+    # a soft streetlight reflection on the glass over the piece
+    h, w = composed.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    c = np.mean(quad, 0)
+    glow = 0.35 * np.exp(-(((xx - c[0]) / 40) ** 2 + ((yy - c[1]) / 30) ** 2))
+    lit = color.linear_to_srgb(color.srgb_to_linear(composed) + glow[..., None])
+    g = fidelity.gate(piece, lit)
+    plain, _, _ = fidelity.repair(piece, lit, g.located, glazed=False)
+    glazed, _, _ = fidelity.repair(piece, lit, g.located, glazed=True)
+    cy, cx = int(c[1]), int(c[0])
+    spot = (slice(cy - 10, cy + 10), slice(cx - 10, cx + 10))
+    assert glazed[spot].mean() > plain[spot].mean() + 0.03
+    # the reflection is soft light: the piece's detail is still the original
+    assert fidelity.verify(piece, glazed, g.located) > 0.85
