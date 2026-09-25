@@ -126,8 +126,11 @@ def _overlap(quads, shape):
     return float(worst)
 
 
-def still(job, attempts=3, timeout=600):
+def still(job, attempts=3, timeout=600, image_endpoint=None):
     job.require("brief")
+    if image_endpoint:
+        job.data["endpoints"]["image"] = image_endpoint
+        job.save()
     pieces = _presented_pieces(job)
     prompt = prompts.still_prompt(job["brief"]["scene"], [(p.shape[1], p.shape[0]) for p in pieces])
     ep = job["endpoints"]["image"]

@@ -100,7 +100,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
 
 ## Models
 
-Defaults (all on fal): image `fal-ai/nano-banana-pro/edit`, video `fal-ai/kling-video/v3/pro/image-to-video`, depth `fal-ai/image-preprocessors/depth-anything/v2`. `--video-endpoint bytedance/seedance-2.5/image-to-video` selects Seedance 2.5 (1080p, billed per token, higher cost). The piece and the scene images are sent to fal; nothing else leaves the machine.
+Defaults (all on fal): image `fal-ai/nano-banana-pro/edit`, video `fal-ai/kling-video/v3/pro/image-to-video`, depth `fal-ai/image-preprocessors/depth-anything/v2`. `--image-endpoint openai/gpt-image-2.5/flare/edit` (on `init`, or on `still` to switch an existing job) selects GPT Image 2.5 Flare, which kept several pieces' colours and composition closer in testing. `--video-endpoint bytedance/seedance-2.5/image-to-video` selects Seedance 2.5 (1080p, billed per token, higher cost). The piece and the scene images are sent to fal; nothing else leaves the machine.
 
 ## Known limits
 

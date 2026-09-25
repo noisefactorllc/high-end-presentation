@@ -52,7 +52,8 @@ def main(argv=None):
                     raise JobError("--brief-file is required for brief")
                 out = stages.brief(job, json.loads(Path(a.brief_file).read_text()))
             elif a.stage == "still":
-                out = stages.still(job, attempts=a.attempts, timeout=a.timeout or 600)
+                out = stages.still(job, attempts=a.attempts, timeout=a.timeout or 600,
+                                   image_endpoint=a.image_endpoint)
             elif a.stage == "video":
                 out = stages.video(job, timeout=a.timeout or 900)
             else:

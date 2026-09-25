@@ -98,3 +98,12 @@ def test_data_uri_downsizes(tmp_path):
     import numpy as np
     uri = fal.data_uri(np.zeros((100, 400, 3), np.float32), max_side=200)
     assert uri.startswith("data:image/jpeg;base64,")
+
+
+def test_image_size_follows_aspect_and_resolution():
+    from hep import endpoints
+    assert endpoints.image_size("16:9", "2K") == {"width": 2048, "height": 1152}
+    assert endpoints.image_size("4:5", "2K") == {"width": 1632, "height": 2048}
+    args = endpoints.image_args("openai/gpt-image-2.5/flare/edit", "p", ["u1", "u2"], "1:1", "1K")
+    assert args["image_size"] == {"width": 1024, "height": 1024} and args["image_urls"] == ["u1", "u2"]
+    assert "aspect_ratio" not in args
