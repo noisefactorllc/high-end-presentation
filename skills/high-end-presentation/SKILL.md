@@ -5,14 +5,14 @@ description: Use when an artist wants a still image or video of their artwork pr
 
 # High-end presentation
 
-Turn one artwork (a still image or a video) plus a short prompt into one still image. The still shows the piece on display in a synthetic scene, photographed as a long exposure: people who pass become translucent ghosts, people who stop to look stay solid, bright moving lights leave trails. Depth of field keeps the piece as the only sharp plane. A subtle grade drawn from the piece's own palette ties the scene together.
+Turn one artwork (a still image or a video) plus a short prompt into one still image. The still shows the piece on display in a synthetic scene, photographed as a multiple long exposure: people appear several times along their paths as translucent figures, people who stop to look build up towards solid, and bright moving lights leave trails. People may cross in front of the piece, as they would in life. Depth of field keeps the piece as the only sharp plane. A subtle grade drawn from the piece's own palette ties the scene together.
 
 ## The rule you must not break
 
-The piece's features never change. Shapes, marks, composition, detail, and proportions are the artist's. The scene may light the piece (color of light, falloff, glare, passing shadows); nothing may redraw it. The scripts enforce this:
+The piece's features never change. Shapes, marks, composition, detail, and proportions are the artist's. The scene may light the piece (color of light, falloff, glare, reflections in glass, passing shadows), and people may pass in front of it; nothing may redraw it. The scripts enforce this:
 
 - The reference still is gated. The piece must be found, its proportions must match, and its detail must correlate with the original. A failed gate means regenerate, never "use it anyway".
-- The final image carries the artist's own pixels in the piece region, relit by the scene. `finish` refuses to write a result whose piece region does not verify.
+- The final image carries the artist's own pixels in the piece region, relit by the scene. Inside the frame, only figures that enter from outside it are kept; changes confined to the frame are the video model distorting the artwork and are dropped. `finish` checks the uncovered part of the piece and refuses to write a result that does not verify.
 
 Do not work around a failed gate by loosening thresholds or editing the piece.
 
@@ -32,12 +32,16 @@ Ask only for what is missing:
 
 Energy sets the life in the scene:
 
-| Energy | People | Ghosts over the piece | Light trails | Around the piece |
-|--------|--------|-----------------------|--------------|------------------|
-| quiet | one or two, one lingers | never | soft | wide clearing: ghosts fade before they reach it |
-| calm | a few, some stop | never | gentle | clearing |
-| lively | steady flow | rare, faint | clear | ghosts may pass close |
-| bustling | crowd | faint | dense | ghosts may pass close |
+| Energy | People | Exposures layered | Figure opacity each | Light trails |
+|--------|--------|-------------------|---------------------|--------------|
+| quiet | one or two, one lingers | 5 | 0.65 | soft |
+| calm | a few, some stop | 7 | 0.55 | gentle |
+| lively | steady flow | 10 | 0.45 | clear |
+| bustling | crowd | 14 | 0.38 | dense |
+
+Under the figures, a streak layer blurs each path; its density is solved per clip, so a busy clip does not turn into a veil.
+
+**Glazing.** For `storefront` and `glass-display` the piece is behind glass: the reference still's reflections stay over the piece, and moving light (headlights, lit passers-by) reflects across it. Set `"glazed": true` in the brief for any other scene with glass in front of the piece (a framed print under glass), or `false` to turn it off.
 
 ## Setup (once per machine)
 
@@ -62,7 +66,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
 
 3. **Brief.** Write a JSON file and run `$PY $R brief --job JOB --brief-file BRIEF.json`.
    Required keys: `themes` (list), `mood` (string), `scene` (the scene paragraph), `motion` (the activity paragraph).
-   Optional look keys: `focus` (depth-of-field strength, default 1.0; 0 disables), `vignette` (0.22), `tone` (split-tone strength, 0.15), `contrast` (0.08), `grain` (0.012), `piece_grade` (share of the grade applied to the piece, 0.5).
+   Optional keys: `glazed` (glass in front of the piece; see Glazing), `focus` (depth-of-field strength, default 1.0; 0 disables), `vignette` (0.22), `tone` (split-tone strength, 0.15), `contrast` (0.08), `grain` (0.012), `piece_grade` (share of the grade applied to the piece, 0.5).
    Build `scene` and `motion` from the archetype in `references/scenes.md`. Let the analysis drive the choices: light that flatters the palette (a warm spot on a cool, dark piece; soft daylight on a pale one), materials that echo the themes, and a time of day that suits the mood. Follow the rules at the top of `scenes.md`. The runner adds the fidelity and locked-camera clauses itself.
 
 4. **Reference still.** `$PY $R still --job JOB` (about 30 s and USD 0.15 per attempt; up to 3 attempts).
@@ -77,7 +81,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
 6. **Video.** `$PY $R video --job JOB [--timeout 900]` (Kling v3 Pro, 10 s clip: about 4 minutes and about USD 1.40). Exit 3 means it is still rendering; rerun the same command. Run it in the background when your harness allows.
 
 7. **Develop.** `$PY $R develop --job JOB` (about 40 s). Stacks the clip into the long exposure and writes `JOB/develop/exposure-preview.jpg`. Read the report:
-   - `occlusion-removed` in `notes`: people crossed the piece although the energy forbids it. The clearing hides this, but the people who stopped to look may be lost. If the image lacks viewers, rerun `video` (a new request) or raise the energy.
+   - `piece_covered`: share of the piece that figures cover. Above about 0.5 the piece reads poorly; rerun `video` or lower the energy.
    - `camera-moved`: the video model moved the camera; registration compensated. Look for doubled edges.
    - `background:median`: the clip's ends did not match the plate; viewers who stood still may vanish.
    - `no-motion`: nothing happened in the clip. Rerun `video` with a more active `motion` text.
@@ -99,5 +103,5 @@ Defaults (all on fal): image `fal-ai/nano-banana-pro/edit`, video `fal-ai/kling-
 ## Known limits
 
 - For a steep side view, where one pair of the frame's edges stays parallel in the image, the proportion check depends on a normal-lens assumption. Keep views straight on or gently angled.
-- Video models sometimes ignore "stay beside the artwork". At quiet and calm energy the clearing hides crossings, but the viewers who stopped in front of the piece are removed with them.
+- A person who stands entirely inside the frame's outline (never overlapping the wall around it) is treated as distortion and dropped.
 - Scene resolution is the image model's (2K by default). The video only contributes the activity layer, so it does not limit sharpness.

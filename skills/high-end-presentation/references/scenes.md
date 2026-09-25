@@ -10,7 +10,7 @@ Rules for every scene text:
 - Put the piece straight on, or at a gentle angle. A steep side view weakens the proportion check.
 - Give the lens and distance. The lens sets the field of view; no later stage changes it.
 - Make the piece fill 35 to 60 percent of the frame width. Smaller pieces fail the gate.
-- Put the piece where people can pass beside it. For quiet and calm energy, leave clear floor to its left and right.
+- Leave open floor in front of the piece, so people can pass it and stop to look.
 - Say nothing about people in the `scene` text. The reference still must be empty.
 
 ## gallery
