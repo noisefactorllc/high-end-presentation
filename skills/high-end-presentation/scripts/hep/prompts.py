@@ -12,6 +12,11 @@ ENERGY_MOTION = {
                  "stop in front of the artwork to look. Moving lights and shadows sweep across the space."),
 }
 
+NO_TEXT = ("There is no text anywhere in the scene: no words, letters, numbers, logos, brand names, or readable "
+           "signage. Any signs, boards, or screens other than the artworks show only abstract light or plain "
+           "colour.")
+
+
 def _ratio(w, h):
     from math import gcd
     g = gcd(w, h) or 1
@@ -33,8 +38,8 @@ def still_prompt(scene_text, sizes):
                     "composition, marks, detail, and colors, at its exact aspect ratio. Keep them separate; do "
                     "not merge, crop, redraw, restyle, extend, mirror, or add anything to any artwork. Every "
                     "artwork is fully visible and nothing covers it.")
-    return (f"{scene_text.strip()}\n\n{fidelity} The scene contains no people. Photographic realism; the "
-            "light in the scene falls naturally on the artwork.")
+    return (f"{scene_text.strip()}\n\n{fidelity} The scene contains no people. {NO_TEXT} Photographic "
+            "realism; the light in the scene falls naturally on the artwork.")
 
 
 def video_prompt(motion_text, energy):

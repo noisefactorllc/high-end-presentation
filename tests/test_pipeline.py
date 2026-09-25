@@ -231,3 +231,10 @@ def test_same_request_attempts_are_rechecked_not_regenerated(tmp_path, monkeypat
     fake.scene_img = good
     out = stages.still(job, attempts=1)
     assert out["attempt"] == 1 and len(fake.calls) == calls + 1
+
+
+def test_still_prompt_forbids_text():
+    from hep import prompts
+    for sizes in ([(400, 300)], [(10, 10), (10, 10)]):
+        p = prompts.still_prompt("A gallery.", sizes)
+        assert "no text anywhere" in p and "no people" in p

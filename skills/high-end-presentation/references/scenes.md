@@ -12,6 +12,7 @@ Rules for every scene text:
 - Make the piece fill 35 to 60 percent of the frame width. Smaller pieces fail the gate.
 - Leave open floor in front of the piece, so people can pass it and stop to look.
 - Say nothing about people in the `scene` text. The reference still must be empty.
+- Do not ask for signs, boards, or anything with words. The runner forbids text in the still; image models add lettering whenever a scene invites it.
 
 ## gallery
 
@@ -59,7 +60,7 @@ Light choices: keep the room darker than the piece so the piece reads as the lig
 
 For glowing, saturated, or moving pieces shown as displays in a busy public space. Several pieces work well here as a row or a wall of screens.
 
-Scene: "A photograph of a busy international airport concourse at night. The artworks play on large, bright, frameless LCD screens mounted side by side on a dark wall above the concourse, glowing intensely. Their colored light spills across the polished terrazzo floor, the glass balustrade, and the brushed-steel columns. Departure boards glow in the distance. Shot on a 35mm lens at eye level from across the concourse, straight on; the row of screens fills about seventy percent of the frame width."
+Scene: "A photograph of a busy international airport concourse at night. The artworks play on large, bright, frameless LCD screens mounted side by side on a dark wall above the concourse, glowing intensely. Their colored light spills across the polished terrazzo floor, the glass balustrade, and the brushed-steel columns. Distant blue ceiling lights glow down the concourse. Shot on a 35mm lens at eye level from across the concourse, straight on; the row of screens fills about seventy percent of the frame width."
 
 Motion: "Travelers stream through the concourse in both directions, pulling rolling suitcases, some hurrying, some stopping to look up at the screens. An electric cart glides past with its lights on. The screens' colored light washes over the people as they pass."
 

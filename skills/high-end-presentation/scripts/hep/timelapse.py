@@ -32,15 +32,15 @@ ENERGY = {
     # ghost_opacity: mean ghost opacity over the pixels people passed through.
     # The density exponent k is solved per clip, so a busy clip does not turn
     # into a veil and a sparse one does not vanish.
-    # exposures / exposure_opacity: the multiple-exposure figure layer.
-    "quiet":    {"ghost_opacity": 0.28, "exposures": 5,  "exposure_opacity": 0.65,
-                 "trail_gain": 0.35},
-    "calm":     {"ghost_opacity": 0.37, "exposures": 7,  "exposure_opacity": 0.55,
-                 "trail_gain": 0.6},
-    "lively":   {"ghost_opacity": 0.45, "exposures": 10, "exposure_opacity": 0.45,
-                 "trail_gain": 0.9},
-    "bustling": {"ghost_opacity": 0.52, "exposures": 14, "exposure_opacity": 0.38,
-                 "trail_gain": 1.2},
+    # figure_layers: how many figures, on average, overlap where people move.
+    # The number of exposures follows from how crowded the clip's frames are,
+    # so a packed clip uses a few exposures and a sparse one uses many; every
+    # figure stays a distinct translucent person.
+    # figure_opacity: opacity of each layered figure.
+    "quiet":    {"ghost_opacity": 0.22, "figure_layers": 0.8, "figure_opacity": 0.7, "trail_gain": 0.35},
+    "calm":     {"ghost_opacity": 0.28, "figure_layers": 1.1, "figure_opacity": 0.62, "trail_gain": 0.6},
+    "lively":   {"ghost_opacity": 0.32, "figure_layers": 1.5, "figure_opacity": 0.56, "trail_gain": 0.9},
+    "bustling": {"ghost_opacity": 0.35, "figure_layers": 2.0, "figure_opacity": 0.5, "trail_gain": 1.2},
 }
 
 MEDIAN_SAMPLES = 41
@@ -234,8 +234,21 @@ def figures_only(w, display_hard, min_outside=0.15):
     return w * ((1 - display_hard) + display_hard * np.clip(kept, 0, 1))
 
 
+def exposure_count(exposures, P, layers, active=0.02):
+    """How many exposures give `layers` overlapping figures, on average, over
+    the pixels where people move."""
+    act = P > active
+    if not exposures or not act.any():
+        return 0
+    cover = float(np.mean([w.astype(np.float32)[act].mean() for _, w in exposures]))
+    if cover <= 1e-4:
+        return 0
+    return int(np.clip(round(layers / cover), 1, len(exposures)))
+
+
 def multiple_exposure(base, exposures, count, opacity, display_hard=None):
-    """Layer `count` evenly spaced exposures' moving subjects over base."""
+    """Layer `count` evenly spaced exposures' moving subjects over base, one
+    after another, so each person stays a distinct translucent figure."""
     if not exposures or count <= 0:
         return base
     idx = np.linspace(0, len(exposures) - 1, min(count, len(exposures))).round().astype(int)
@@ -266,7 +279,7 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None, glazed=False):
     # The display: the piece plus a band that covers its frame. The video model
     # drifts and distorts the artwork and frame during a clip; inside the
     # display only figures that come in from outside it are kept.
-    band_px = max(2, int(round(0.015 * np.sqrt(area))))
+    band_px = max(2, int(round(0.035 * np.sqrt(area))))
     hard = cv2.dilate((m_canvas > 0.02).astype(np.uint8), np.ones((2 * band_px + 1,) * 2, np.uint8))
     display = np.maximum(cv2.GaussianBlur(hard.astype(np.float32), (0, 0), band_px), m_canvas)
     hard = hard.astype(np.float32)
@@ -274,13 +287,13 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None, glazed=False):
     k = e["ghost_k"] if "ghost_k" in e else solve_density(st.P, e["ghost_opacity"])
     alpha = 1.0 - (1.0 - np.clip(st.P, 0, 1)) ** k
     streaks = st.B + (alpha * (1 - display))[..., None] * (st.C - st.B)
-    ghost_img = multiple_exposure(streaks, st.exposures, e.get("exposures", 0), e.get("exposure_opacity", 0.0),
-                                  display_hard=hard)
+    count = exposure_count(st.exposures, st.P, e["figure_layers"]) if "figure_layers" in e else 0
+    ghost_img = multiple_exposure(streaks, st.exposures, count, e.get("figure_opacity", 0.0), display_hard=hard)
     G = ghost_img - st.B
-    # trails: only light that is bright in absolute terms (lamps, headlights,
-    # glints). People in pale clothes are figures, not trails.
+    # trails: only light near clipping (lamps, headlights, glints). People in
+    # pale clothes and white vehicles are figures, not trails.
     excess = np.maximum(st.L - np.maximum(ghost_img, st.B), 0)
-    bright = smoothstep(0.5, 0.9, color.luma(st.L)) * smoothstep(0.08, 0.3, color.luma(excess))
+    bright = smoothstep(0.75, 0.95, color.luma(st.L)) * smoothstep(0.08, 0.3, color.luma(excess))
     T = excess * bright[..., None] * (1 - display)[..., None]
     D = G + e["trail_gain"] * T
     # dead zone against compression noise
@@ -315,7 +328,7 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None, glazed=False):
         "display_band_px": band_px,
         "piece_covered": round(covered, 4),
         "glazed": bool(glazed),
-        "exposures_used": min(e.get("exposures", 0), len(st.exposures)),
+        "exposures_used": count,
         "max_shift": round(st.max_shift, 4),
         "notes": list(st.notes),
     }

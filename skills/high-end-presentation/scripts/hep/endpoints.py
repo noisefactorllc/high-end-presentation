@@ -1,5 +1,5 @@
 """fal endpoint adapters: build arguments and read results."""
-IMAGE_DEFAULT = "fal-ai/nano-banana-pro/edit"
+IMAGE_DEFAULT = "openai/gpt-image-2.5/flare/edit"
 VIDEO_DEFAULT = "fal-ai/kling-video/v3/pro/image-to-video"
 DEPTH_DEFAULT = "fal-ai/image-preprocessors/depth-anything/v2"
 

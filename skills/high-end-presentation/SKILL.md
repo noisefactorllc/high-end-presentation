@@ -69,7 +69,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
    Optional keys: `glazed` (glass in front of the piece; see Glazing), `focus` (depth-of-field strength, default 1.0; 0 disables), `vignette` (0.22), `tone` (split-tone strength, 0.15), `contrast` (0.08), `grain` (0.012), `piece_grade` (share of the grade applied to the piece, 0.5).
    Build `scene` and `motion` from the archetype in `references/scenes.md`. Let the analysis drive the choices: light that flatters the palette (a warm spot on a cool, dark piece; soft daylight on a pale one), materials that echo the themes, and a time of day that suits the mood. Follow the rules at the top of `scenes.md`. The runner adds the fidelity and locked-camera clauses itself.
 
-4. **Reference still.** `$PY $R still --job JOB` (about 30 s and USD 0.15 per attempt; up to 3 attempts).
+4. **Reference still.** `$PY $R still --job JOB` (about 40 s per attempt; up to 3 attempts).
    With several pieces, every piece must pass, each in its own place (`pieces-overlap` means two pieces matched the same spot). On exit 2, read each attempt's `reason` (prefixed `piece N:` when several pieces are given):
    - `not-found:*` or `area`: the piece is too small or hidden. Make it larger in the scene text, rewrite the brief, rerun.
    - `aspect`: the model changed the piece's proportions. Rerun; if it repeats, use a straight-on view.
@@ -100,7 +100,7 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
 
 ## Models
 
-Defaults (all on fal): image `fal-ai/nano-banana-pro/edit`, video `fal-ai/kling-video/v3/pro/image-to-video`, depth `fal-ai/image-preprocessors/depth-anything/v2`. `--image-endpoint openai/gpt-image-2.5/flare/edit` (on `init`, or on `still` to switch an existing job) selects GPT Image 2.5 Flare, which kept several pieces' colours and composition closer in testing. `--video-endpoint bytedance/seedance-2.5/image-to-video` selects Seedance 2.5 (1080p, billed per token, higher cost). The piece and the scene images are sent to fal; nothing else leaves the machine.
+Defaults (all on fal): image `openai/gpt-image-2.5/flare/edit`, video `fal-ai/kling-video/v3/pro/image-to-video`, depth `fal-ai/image-preprocessors/depth-anything/v2`. `--image-endpoint fal-ai/nano-banana-pro/edit` (on `init`, or on `still` to switch an existing job) selects Nano Banana Pro, which renders larger (up to 4K) but zoomed and recoloured pieces more often in testing. `--video-endpoint bytedance/seedance-2.5/image-to-video` selects Seedance 2.5 (1080p, billed per token, higher cost). The piece and the scene images are sent to fal; nothing else leaves the machine.
 
 ## Known limits
 
