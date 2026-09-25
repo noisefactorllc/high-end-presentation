@@ -57,7 +57,20 @@ def scene():
     return plain_scene()
 
 
-QUAD = [[180, 220], [560, 240], [550, 540], [175, 530]]
+def project_quad(aspect, yaw_deg, pitch_deg, width_px, center, f=1400.0, size=(720, 900)):
+    """Image quad (TL, TR, BR, BL) of a rectangle with this aspect seen by a
+    pinhole camera, scaled so its top edge is about width_px wide."""
+    y, p = np.radians(yaw_deg), np.radians(pitch_deg)
+    Ry = np.array([[np.cos(y), 0, np.sin(y)], [0, 1, 0], [-np.sin(y), 0, np.cos(y)]])
+    Rx = np.array([[1, 0, 0], [0, np.cos(p), -np.sin(p)], [0, np.sin(p), np.cos(p)]])
+    pts = np.array([[-aspect / 2, -0.5, 0], [aspect / 2, -0.5, 0], [aspect / 2, 0.5, 0], [-aspect / 2, 0.5, 0]])
+    dist = f * aspect / width_px
+    cam = (Rx @ Ry @ pts.T).T + [(center[0] - size[0] / 2) * dist / f, (center[1] - size[1] / 2) * dist / f, dist]
+    return (cam[:, :2] / cam[:, 2:] * f + np.array(size) / 2).tolist()
+
+
+# a 480x360 piece seen slightly from the left and above
+QUAD = project_quad(480 / 360, 12, -6, 380, (370, 380))
 
 
 @pytest.fixture

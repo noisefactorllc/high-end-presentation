@@ -24,10 +24,13 @@ class GateResult:
     located: locate.Located
     reason: str
 
+    aspect_error: float = 0.0
+
     def to_json(self):
         return {"passed": self.passed, "corr": round(self.corr, 4), "worst_tile": round(self.worst, 4),
                 "bands": [round(b, 4) for b in self.bands], "area": round(self.area, 4),
-                "located": self.located.to_json(), "reason": self.reason}
+                "aspect_error": round(self.aspect_error, 4), "located": self.located.to_json(),
+                "reason": self.reason}
 
 
 def lighting_model(orig_lin, ref_lin, grid=12, eps=4e-4):
@@ -131,7 +134,14 @@ def measure(piece, scene, located):
     return wp, flat, s
 
 
-def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, located=None):
+def aspect_error(piece, scene, located):
+    """Relative error of the piece's apparent physical proportions."""
+    est = locate.rectangle_aspect(located.quad, (scene.shape[1], scene.shape[0]))
+    true = piece.shape[1] / piece.shape[0]
+    return abs(est / true - 1.0)
+
+
+def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, max_aspect_error=0.04, located=None):
     located = located or locate.find_piece(piece, scene)
     area = 0.0
     if located.ok:
@@ -140,6 +150,9 @@ def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, located=No
         return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, f"not-found:{located.reason}")
     if area < min_area:
         return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, "area")
+    asp = aspect_error(piece, scene, located)
+    if asp > max_aspect_error:
+        return GateResult(False, 0.0, 0.0, [0.0, 0.0], area, located, "aspect", asp)
     wp, flat, _ = measure(piece, scene, located)
     a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
     relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
@@ -150,10 +163,10 @@ def gate(piece, scene, *, min_corr=0.6, min_tile=0.35, min_area=0.02, located=No
     tiles = tile_correlations(relit, flat)
     worst = float(min(tiles)) if tiles else corr
     if corr < min_corr:
-        return GateResult(False, corr, worst, bands, area, located, "detail-drift")
+        return GateResult(False, corr, worst, bands, area, located, "detail-drift", asp)
     if worst < min_tile:
-        return GateResult(False, corr, worst, bands, area, located, "local-drift")
-    return GateResult(True, corr, worst, bands, area, located, "")
+        return GateResult(False, corr, worst, bands, area, located, "local-drift", asp)
+    return GateResult(True, corr, worst, bands, area, located, "", asp)
 
 
 def piece_mask(shape, H, piece_size, feather=1.5, inset=1.0):

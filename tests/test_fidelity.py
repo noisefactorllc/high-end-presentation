@@ -61,3 +61,14 @@ def test_repair_restores_original_detail(piece, scene, quad):
     inside = mask > 0.99
     r, b = repaired[inside][:, 0].mean(), repaired[inside][:, 2].mean()
     assert r > b
+
+
+def test_squeezed_piece_fails_on_aspect(piece, scene):
+    h, w = piece.shape[:2]
+    squeezed = cv2.resize(piece, (int(w * 0.9), h))
+    # placed frontally with the wrong proportions
+    q = [[150, 250], [150 + int(w * 0.9), 250], [150 + int(w * 0.9), 250 + h], [150, 250 + h]]
+    composed, _ = place(squeezed, scene, q)
+    g = fidelity.gate(piece, composed)
+    assert g.located.ok
+    assert not g.passed and g.reason == "aspect"

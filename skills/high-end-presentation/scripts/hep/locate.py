@@ -56,6 +56,31 @@ def quad_area(quad):
     return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
 
+def rectangle_aspect(quad, image_size):
+    """Physical width/height of the rectangle whose image is quad (TL, TR, BR,
+    BL), assuming square pixels and the principal point at the image center
+    (Zhang & He, rectangle rectification). Handles frontal views too."""
+    w, h = image_size
+    c = np.array([w / 2.0, h / 2.0])
+    tl, tr, br, bl = (np.asarray(q, np.float64) - c for q in quad)
+    m1, m2, m3, m4 = (np.array([p[0], p[1], 1.0]) for p in (tl, tr, bl, br))
+    k2 = np.dot(np.cross(m1, m4), m3) / np.dot(np.cross(m2, m4), m3)
+    k3 = np.dot(np.cross(m1, m4), m2) / np.dot(np.cross(m3, m4), m2)
+    n2 = k2 * m2 - m1
+    n3 = k3 * m3 - m1
+    scale = max(np.abs(n2[:2]).max(), np.abs(n3[:2]).max())
+    den = n2[2] * n3[2]
+    f2 = -(n2[0] * n3[0] + n2[1] * n3[1]) / den if abs(den) > 1e-9 * scale * scale else -1.0
+    lo, hi = (0.5 * max(w, h)) ** 2, (4.0 * max(w, h)) ** 2
+    if not np.isfinite(f2) or not lo <= f2 <= hi:
+        # One or both side pairs are (nearly) parallel in the image, so the
+        # focal length is not observable. Use a normal-lens prior (about a
+        # 35-50 mm equivalent); frontal views do not depend on it.
+        f2 = (1.4 * max(w, h)) ** 2
+    Ainv2 = np.diag([1.0 / f2, 1.0 / f2, 1.0])
+    return float(np.sqrt((n2 @ Ainv2 @ n2) / (n3 @ Ainv2 @ n3)))
+
+
 def find_piece(piece, scene, piece_side=1600, scene_side=2600, min_inliers=25):
     gp, sp = _gray8(piece, piece_side)
     gs, ss = _gray8(scene, scene_side)
