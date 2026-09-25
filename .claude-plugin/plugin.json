@@ -5,5 +5,13 @@
   "author": {
     "name": "Noise Factor LLC"
   },
-  "keywords": ["art", "presentation", "mockup", "long-exposure", "time-lapse", "fal"]
+  "license": "MIT",
+  "keywords": [
+    "art",
+    "presentation",
+    "mockup",
+    "long-exposure",
+    "time-lapse",
+    "fal"
+  ]
 }
