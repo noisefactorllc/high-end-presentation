@@ -1,0 +1,17 @@
+{
+  "name": "noisefactor",
+  "owner": {
+    "name": "Noise Factor LLC"
+  },
+  "metadata": {
+    "description": "Claude Code plugins from Noise Factor"
+  },
+  "plugins": [
+    {
+      "name": "high-end-presentation",
+      "source": "./",
+      "description": "Present an artwork in a synthetic scene as one long-exposure still",
+      "version": "0.1.0"
+    }
+  ]
+}
