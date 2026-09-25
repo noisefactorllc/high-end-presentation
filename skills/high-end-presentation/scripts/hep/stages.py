@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from . import analyze as analyze_mod
-from . import color, endpoints, fal, fidelity, grade, lens, locate, media, prompts, timelapse
+from . import color, display, endpoints, fal, fidelity, grade, lens, locate, media, prompts, timelapse
 from .job import Job, JobError
 
 FINAL_MIN_CORR = 0.85
@@ -15,6 +15,7 @@ ECHO_STRENGTH = 0.15
 
 GLAZED_SCENES = {"storefront", "glass-display", "screens"}
 MAX_PIECES = 6
+MAX_REPEAT = 24
 MAX_QUAD_OVERLAP = 0.05
 
 
@@ -27,10 +28,15 @@ def _client():
 
 
 def init(root, pieces, prompt, *, scene="freeform", energy="calm", aspect="4:5", resolution="2K",
-         duration=10, echo=False, frame=None, name=None, image_endpoint=None, video_endpoint=None):
+         duration=10, echo=False, frame=None, name=None, image_endpoint=None, video_endpoint=None,
+         repeat=None, display_mode="flat"):
     pieces = [pieces] if isinstance(pieces, (str, Path)) else list(pieces)
     if not 1 <= len(pieces) <= MAX_PIECES:
         raise JobError(f"give between 1 and {MAX_PIECES} pieces")
+    if repeat is not None and (len(pieces) != 1 or not 2 <= int(repeat) <= MAX_REPEAT):
+        raise JobError(f"--repeat shows one piece on 2 to {MAX_REPEAT} screens; give exactly one piece")
+    if display_mode not in display.TREATMENTS:
+        raise JobError(f"display must be one of {', '.join(sorted(display.TREATMENTS))}")
     pieces = [Path(p).resolve() for p in pieces]
     for p in pieces:
         if not p.exists():
@@ -45,6 +51,7 @@ def init(root, pieces, prompt, *, scene="freeform", energy="calm", aspect="4:5",
         "pieces": [str(p) for p in pieces], "prompt": prompt, "scene": scene, "energy": energy,
         "aspect": aspect, "resolution": resolution, "duration": int(duration), "echo": bool(echo),
         "frame": frame, "name": name or pieces[0].stem,
+        "repeat": int(repeat) if repeat is not None else None, "display": display_mode,
         "glazed": scene in GLAZED_SCENES,
         "endpoints": {"image": image_endpoint or endpoints.IMAGE_DEFAULT,
                       "video": video_endpoint or endpoints.VIDEO_DEFAULT,
@@ -132,7 +139,8 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
         job.data["endpoints"]["image"] = image_endpoint
         job.save()
     pieces = _presented_pieces(job)
-    prompt = prompts.still_prompt(job["brief"]["scene"], [(p.shape[1], p.shape[0]) for p in pieces])
+    repeat = job.get("repeat")
+    prompt = prompts.still_prompt(job["brief"]["scene"], [(p.shape[1], p.shape[0]) for p in pieces], repeat=repeat)
     ep = job["endpoints"]["image"]
     client = _client()
     uris = [fal.data_uri(p, max_side=2048) for p in pieces]
@@ -142,6 +150,10 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
 
     def evaluate(n, path):
         scene = media.load_image(path)
+        if repeat:
+            screens = fidelity.locate_screens(pieces[0], scene, repeat)
+            reason = "" if len(screens) == repeat else f"screens-found:{len(screens)}/{repeat}"
+            return scene, screens, reason
         gates = [fidelity.gate(p, scene) for p in pieces]
         failed = [(i, g) for i, g in enumerate(gates) if not g.passed]
         reason = "; ".join(f"piece {i}: {g.reason}" for i, g in failed)
@@ -150,7 +162,50 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
             reason = f"pieces-overlap:{overlap:.2f}"
         return scene, gates, reason
 
+    def record(found):
+        if repeat:
+            return [{"screen": s[0].to_json(), "aspect": round(s[1], 4), "composition": round(s[2], 4)} for s in found]
+        return [g.to_json() for g in found]
+
+    def accept_screens(n, path, scene, screens):
+        plate_lin = color.srgb_to_linear(scene)
+        mask = np.zeros(scene.shape[:2], np.float32)
+        located, images, summary = [], [], []
+        for k, (loc, asp, corr) in enumerate(screens):
+            canvas = display.screen_canvas(pieces[0], asp)
+            if job.get("display") == "crt":
+                img, alpha = display.crt(canvas)
+            else:
+                img, alpha = color.srgb_to_linear(canvas), np.ones(canvas.shape[:2], np.float32)
+            ch, cw = canvas.shape[:2]
+            H = cv2.getPerspectiveTransform(locate.corners(cw, ch).astype(np.float32),
+                                            np.float32(loc.quad)).astype(np.float64)
+            # match the screen's brightness to the scene's rendering of it
+            seen = color.luma(color.srgb_to_linear(locate.flatten(scene, H, (cw, ch)))).mean()
+            img = img * float(np.clip(seen / max(color.luma(img).mean(), 1e-4), 0.4, 2.5))
+            a = cv2.GaussianBlur(fidelity.warp_into(np.repeat(alpha[..., None], 3, -1), H, scene.shape)[..., 0],
+                                 (0, 0), 0.8)[..., None]
+            plate_lin = plate_lin * (1 - a) + fidelity.warp_into(img, H, scene.shape) * a
+            mask = np.maximum(mask, a[..., 0])
+            images.append(str(media.save_image(job.file("still", f"screen-{k}.png"), color.linear_to_srgb(img))))
+            located.append(locate.Located(True, H, loc.quad, 0, 0, "screen").to_json())
+            summary.append({"composition": round(corr, 4), "screen_aspect": round(asp, 4)})
+        plate = color.linear_to_srgb(plate_lin)
+        media.save_image(job.file("still", "plate.png"), plate)
+        media.save_image(job.file("still", "plate-preview.jpg"), plate)
+        np.save(job.file("still", "mask.npy"), mask.astype(np.float16))
+        job.data["located"] = located
+        job.data["verify_images"] = images
+        job.data["plate_size"] = [plate.shape[1], plate.shape[0]]
+        job.done("still", attempt=n, screens=summary)
+        return {"passed": True, "attempt": n, "screens": summary,
+                "plate_preview": str(job.file("still", "plate-preview.jpg")), "reference": str(path),
+                "next": "look at plate-preview.jpg; then `draft` for a preview or `video`"}
+
     def accept(n, path, scene, gates):
+        if repeat:
+            return accept_screens(n, path, scene, gates)
+        job.data.pop("verify_images", None)
         plate, mask = scene, np.zeros(scene.shape[:2], np.float32)
         for p, g in zip(pieces, gates):
             plate, m, _ = fidelity.repair(p, plate, g.located, glazed=job.get("glazed", False))
@@ -173,7 +228,7 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
     for h in history:
         if h.get("digest") == digest and Path(h["file"]).exists():
             scene, gates, reason = evaluate(h["attempt"], h["file"])
-            h.update(passed=not reason, reason=reason, pieces=[g.to_json() for g in gates])
+            h.update(passed=not reason, reason=reason, pieces=record(gates))
             job.save()
             if not reason:
                 return accept(h["attempt"], h["file"], scene, gates)
@@ -184,7 +239,7 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
         path = fal.download(endpoints.image_url(res), job.file("still", f"attempt-{n}.png"))
         scene, gates, reason = evaluate(n, path)
         history.append({"attempt": n, "file": str(path), "digest": digest, "passed": not reason,
-                        "reason": reason, "pieces": [g.to_json() for g in gates]})
+                        "reason": reason, "pieces": record(gates)})
         job.save()
         if not reason:
             return accept(n, path, scene, gates)
@@ -269,10 +324,16 @@ def _warnings(job):
 def finish(job):
     job.require("develop")
     plate, mask = _plate(job)
-    pieces = _presented_pieces(job)
     exposure = np.load(job.file("develop", "exposure.npy")).astype(np.float32)
     out = _look(job, exposure, plate, mask, _look_opts(job))
     activity = np.load(job.file("develop", "activity.npy")).astype(np.float32)
+    if job.get("verify_images"):
+        # each screen must match its own rendering of the original; the tube's
+        # rounded corners (outside the mask) are not part of that rendering
+        pieces = [media.load_image_any_depth(p) for p in job["verify_images"]]
+        activity = np.maximum(activity, 1 - mask)
+    else:
+        pieces = _presented_pieces(job)
     scores = [fidelity.verify(p, out, locate.Located.from_json(l), exclude=activity)
               for p, l in zip(pieces, job["located"])]
     if min(scores) < FINAL_MIN_CORR:

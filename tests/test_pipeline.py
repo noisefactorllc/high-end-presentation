@@ -238,3 +238,58 @@ def test_still_prompt_forbids_text():
     for sizes in ([(400, 300)], [(10, 10), (10, 10)]):
         p = prompts.still_prompt("A gallery.", sizes)
         assert "no text anywhere" in p and "no people" in p
+
+
+def _tv_wall(piece, n, missing=0):
+    """A dark shop wall with n TVs, each showing the piece pillarboxed on a
+    4:3 screen; `missing` of them are switched off."""
+    from hep import display
+    bg = np.clip(0.25 * plain_scene(640, 800) + 0.1 * textured_piece(640, 800, seed=3), 0, 1).astype(np.float32)
+    screen = display.screen_canvas(piece, 4 / 3, side=160)
+    scene = bg.copy()
+    k = 0
+    for r in range(2):
+        for c in range(n // 2):
+            x, y = 60 + c * 220, 80 + r * 260
+            cv2.rectangle(scene, (x - 18, y - 18), (x + 178, y + 138), (0.12, 0.11, 0.1), -1)
+            if k < n - missing:
+                scene[y:y + 120, x:x + 160] = screen
+            k += 1
+    return scene
+
+
+def test_repeated_screens_with_crt(tmp_path, monkeypatch):
+    piece = textured_piece(240, 240, seed=21)
+    fake = FakeClient(tmp_path, _tv_wall(piece, 6))
+    monkeypatch.setattr(stages, "_client", lambda: fake)
+    root = tmp_path / "tvs"
+    stages.init(root, media.save_image(tmp_path / "p.png", piece), "tv shop", scene="storefront",
+                energy="calm", repeat=6, display_mode="crt")
+    job = Job(root)
+    stages.analyze(job)
+    stages.brief(job, json.loads(_brief(tmp_path).read_text()))
+    s = stages.still(job)
+    assert s["passed"] and len(s["screens"]) == 6
+    assert len(job["verify_images"]) == 6
+    stages.video(job)
+    stages.develop(job)
+    out = stages.finish(job)
+    assert len(out["final_verify"]) == 6 and min(out["final_verify"]) >= stages.FINAL_MIN_CORR
+
+
+def test_missing_screen_fails(tmp_path, monkeypatch):
+    piece = textured_piece(240, 240, seed=21)
+    monkeypatch.setattr(stages, "_client", lambda: FakeClient(tmp_path, _tv_wall(piece, 6, missing=1)))
+    root = tmp_path / "tvs"
+    stages.init(root, media.save_image(tmp_path / "p.png", piece), "x", repeat=6, display_mode="crt")
+    job = Job(root)
+    stages.analyze(job)
+    stages.brief(job, json.loads(_brief(tmp_path).read_text()))
+    with pytest.raises(stages.GateFailed, match="screens-found:5/6"):
+        stages.still(job, attempts=1)
+
+
+def test_repeat_needs_one_piece(tmp_path):
+    p = media.save_image(tmp_path / "p.png", textured_piece(40, 40))
+    with pytest.raises(JobError, match="exactly one piece"):
+        stages.init(tmp_path / "j", [p, p], "x", repeat=4)

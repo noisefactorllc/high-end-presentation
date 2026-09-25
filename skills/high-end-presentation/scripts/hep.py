@@ -32,6 +32,8 @@ def main(argv=None):
     ap.add_argument("--echo", action="store_true", help="moving piece: add a faint echo of its motion")
     ap.add_argument("--frame", type=int, help="moving piece: use this frame instead of the automatic choice")
     ap.add_argument("--name")
+    ap.add_argument("--repeat", type=int, help="show the one piece on exactly this many screens")
+    ap.add_argument("--display", default="flat", help="screen treatment: flat or crt")
     ap.add_argument("--image-endpoint")
     ap.add_argument("--video-endpoint")
     ap.add_argument("--brief-file", help="JSON file with the brief (stage brief)")
@@ -44,7 +46,8 @@ def main(argv=None):
                 raise JobError("--piece is required for init")
             out = stages.init(a.job, a.piece, a.prompt, scene=a.scene, energy=a.energy, aspect=a.aspect,
                               resolution=a.resolution, duration=a.duration, echo=a.echo, frame=a.frame,
-                              name=a.name, image_endpoint=a.image_endpoint, video_endpoint=a.video_endpoint)
+                              name=a.name, image_endpoint=a.image_endpoint, video_endpoint=a.video_endpoint,
+                              repeat=a.repeat, display_mode=a.display)
         else:
             job = Job(a.job)
             if a.stage == "brief":

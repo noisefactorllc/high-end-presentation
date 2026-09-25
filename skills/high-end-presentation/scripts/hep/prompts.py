@@ -23,9 +23,17 @@ def _ratio(w, h):
     return f"{w // g}:{h // g}" if max(w // g, h // g) < 50 else f"{w / h:.3f}:1"
 
 
-def still_prompt(scene_text, sizes):
-    """sizes: [(width, height)] of the provided artworks, in order."""
-    if len(sizes) == 1:
+def still_prompt(scene_text, sizes, repeat=None):
+    """sizes: [(width, height)] of the provided artworks, in order. repeat: the
+    single artwork is shown on exactly this many screens."""
+    if repeat:
+        (w, h), = sizes
+        fidelity = (f"The provided image is shown on exactly {repeat} screens, and every one of those screens "
+                    "shows this same whole image: the same composition, marks, and tones, centred on the screen at "
+                    f"its true aspect ratio ({_ratio(w, h)}) with dark bars at the sides where the screen is wider. "
+                    "Do not crop, stretch, redraw, or vary the image between screens. Every screen is fully "
+                    "visible and nothing covers it.")
+    elif len(sizes) == 1:
         (w, h), = sizes
         fidelity = ("The provided image is the artwork on display. Reproduce it exactly as given: the same "
                     f"composition, marks, detail, and colors, at its exact aspect ratio ({_ratio(w, h)}). Do not "

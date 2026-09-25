@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from . import color, locate, media
+from . import color, display, locate, media
 
 WORK_SIDE = 1536  # resolution for measuring (not for output)
 # The gate compares composition and colour: image models redraw fine texture,
@@ -185,6 +185,32 @@ def locate_piece(piece, scene, min_inliers=12, top=3):
     return best[1]
 
 
+def locate_screens(piece, scene, count, min_corr=0.35, max_overlap=0.2):
+    """Find the screens that each show the whole piece (pillarboxed to the
+    screen's own proportions). Returns [(Located, screen_aspect, corr)], best
+    first, at most `count`."""
+    sh, sw = scene.shape[:2]
+    scored = []
+    for q in locate.candidate_quads(scene, min_frac=0.001, limit=160):
+        asp = locate.rectangle_aspect(q, (sw, sh))
+        if not 0.7 <= asp <= 2.2:
+            continue
+        canvas = display.screen_canvas(piece, asp, side=256)
+        ch, cw = canvas.shape[:2]
+        H = cv2.getPerspectiveTransform(locate.corners(cw, ch).astype(np.float32), np.float32(q)).astype(np.float64)
+        corr, _, dab = composition(canvas, scene, H)
+        if corr >= min_corr:
+            scored.append((corr - max(0.0, (dab - 20.0) / 40.0), corr, asp, q, H))
+    scored.sort(key=lambda t: -t[0])
+    chosen = []
+    for sc, corr, asp, q, H in scored:
+        if all(locate.quad_overlap(q, c[0].quad, scene.shape) <= max_overlap for c in chosen):
+            chosen.append((locate.Located(True, H, np.asarray(q, np.float64), 0, 0, "screen"), asp, corr))
+        if len(chosen) >= count:
+            break
+    return chosen
+
+
 def aspect_error(piece, scene, located):
     """Relative error of the piece's apparent physical proportions."""
     est = locate.rectangle_aspect(located.quad, (scene.shape[1], scene.shape[0]))
@@ -286,6 +312,14 @@ def verify(piece, final, located, exclude=None):
     marks pixels where people or reflected light legitimately cover the piece;
     those pixels are left out of the comparison."""
     wp, flat, s = measure(piece, final, located)
+    # The final image cannot hold detail finer than its own pixels: compare at
+    # the resolution the piece actually occupies in it.
+    ph, pw = wp.shape[:2]
+    foot_full = np.sqrt(locate.quad_area(located.quad) / float(piece.shape[0] * piece.shape[1]))
+    foot = foot_full / s
+    if foot < 1.0:
+        small = media.resize(wp, max(8, round(pw * foot)), max(8, round(ph * foot)))
+        wp = media.resize(small, pw, ph, interpolation=cv2.INTER_LINEAR)
     a, b = lighting_model(color.srgb_to_linear(wp), color.srgb_to_linear(flat))
     relit = color.linear_to_srgb(a * color.srgb_to_linear(wp) + b)
     if exclude is not None:
@@ -293,4 +327,5 @@ def verify(piece, final, located, exclude=None):
         m = locate.flatten(np.asarray(exclude, np.float32), Hs, (wp.shape[1], wp.shape[0]))
         m = np.clip(cv2.GaussianBlur(m, (0, 0), 2.0) * 2.0, 0, 1)[..., None]
         flat = flat * (1 - m) + relit * m
-    return detail_correlation(relit, flat)
+    side = int(np.clip(round(foot_full * max(piece.shape[:2])), 64, 512))
+    return float(np.mean(detail_bands(relit, flat, side=side)))

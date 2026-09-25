@@ -107,14 +107,16 @@ def order_quad(pts):
 
 
 def candidate_quads(scene, min_frac=0.005, max_frac=0.6, limit=40):
-    """Convex quadrilaterals in the scene (screens, frames, mats), largest first."""
+    """Convex quadrilaterals in the scene (screens, frames, mats), largest
+    first. Rounded rectangles (picture tubes) count when they fill most of
+    their bounding box."""
     h, w = scene.shape[:2]
     s = min(1.0, 1400 / max(h, w))
     g = (np.clip(color.luma(media.resize(scene, round(w * s), round(h * s))), 0, 1) * 255).astype(np.uint8)
     found = []
     edges = cv2.Canny(cv2.GaussianBlur(g, (5, 5), 0), 40, 120)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    masks = [edges] + [cv2.threshold(g, t, 255, cv2.THRESH_BINARY)[1] for t in (60, 110, 160, 210)]
+    masks = [edges] + [cv2.threshold(g, t, 255, cv2.THRESH_BINARY)[1] for t in (35, 60, 90, 120, 160, 210)]
     area_img = g.shape[0] * g.shape[1]
     for m in masks:
         contours, _ = cv2.findContours(m, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -125,6 +127,10 @@ def candidate_quads(scene, min_frac=0.005, max_frac=0.6, limit=40):
             approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
             if len(approx) == 4 and cv2.isContourConvex(approx):
                 found.append((a, order_quad(approx[:, 0, :] / s)))
+                continue
+            box = cv2.minAreaRect(c)
+            if a >= 0.85 * box[1][0] * box[1][1]:
+                found.append((a, order_quad(cv2.boxPoints(box) / s)))
     found.sort(key=lambda t: -t[0])
     out = []
     for a, q in found:
@@ -133,6 +139,19 @@ def candidate_quads(scene, min_frac=0.005, max_frac=0.6, limit=40):
         if len(out) >= limit:
             break
     return out
+
+
+def quad_overlap(a, b, shape):
+    """Overlap of two quads as a share of the smaller one."""
+    h, w = shape[:2]
+    s = min(1.0, 512 / max(h, w))
+    masks = []
+    for q in (a, b):
+        m = np.zeros((round(h * s), round(w * s)), np.uint8)
+        cv2.fillConvexPoly(m, np.round(np.asarray(q) * s).astype(np.int32), 1)
+        masks.append(m.astype(bool))
+    inter = (masks[0] & masks[1]).sum()
+    return float(inter / max(1, min(masks[0].sum(), masks[1].sum())))
 
 
 def _bandpass(g):
