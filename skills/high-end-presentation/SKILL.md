@@ -16,6 +16,27 @@ The piece's features never change. Shapes, marks, composition, detail, and propo
 
 Do not work around a failed gate by loosening thresholds or editing the piece.
 
+## Registration during compositing
+
+Use the repaired plate as the fixed coordinate system. Keep its dimensions, crop,
+and artwork placement unchanged from `video` through `finish`; do not independently
+resize or reposition the video, artwork mask, activity mask, or exposure. A new
+plate requires a new video and a fresh `develop` before `finish`.
+
+The runner measures the first video frame against that plate, then corrects each
+later frame back to the first. It refines alignment using agreeing background
+pixels so moving people do not become camera anchors. Both accumulation passes
+reuse the same transforms. Only pixels observed in every registered frame can
+contribute activity; uncovered borders retain the plate, including behind glass.
+
+Before accepting the exposure, compare `still/plate-preview.jpg` with
+`develop/exposure-preview.jpg` at the same displayed size. Inspect all artwork
+corners, frame edges, wall/floor junctions, and crop boundaries. Stationary edges
+must stay single and fixed; trails should follow moving subjects. A fidelity
+score for the artwork does not establish registration elsewhere in the scene.
+If edges double, swim, or jump, reject that exposure even if development succeeds.
+Do not hide misalignment with blur, a stronger grade, or hand-shifted masks.
+
 ## Inputs
 
 Ask only for what is missing:
@@ -90,9 +111,18 @@ Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate f
 
 7. **Develop.** `$PY $R develop --job JOB` (about 70 s). Stacks the clip into the long exposure and writes `JOB/develop/exposure-preview.jpg`. Read the report:
    - `piece_covered`: share of the piece that figures cover. Above about 0.5 the piece reads poorly; rerun `video` or lower the energy.
-   - `camera-moved`: the video model moved the camera; registration compensated. Look for doubled edges.
-   - `background:median`: the clip's ends did not match the plate; viewers who stood still may vanish.
+   - `registration_coverage`: fraction of the plate observed in every registered frame. Below 0.5 development stops. `video-coverage` warns below 0.98; the missing border stays static. Inspect whether that crop interrupts a figure or light trail.
+   - `max_shift`: largest corrected corner displacement, as a fraction of video width, including rotation. `camera-moved` warns above 0.01. Correction was estimated; inspect stationary edges before accepting it.
+   - `background:median`: the registered clip ends disagree with each other; viewers who stood still may vanish.
    - `no-motion`: nothing happened in the clip. Rerun `video` with a more active `motion` text.
+   On exit 1 with `registration:initial:*`, the first frame could not be matched;
+   `registration:frame:N` means frame N could not be aligned reliably. The runner
+   refuses guessed cover-fits and failed or low-confidence frame transforms.
+   `registration:coverage:*` means too little shared image remains. Inspect the
+   source clip and plate, preserve the failed clip, then rerun `video`, `develop`,
+   and `finish` within the authorized render budget. Do not loop paid retries or
+   weaken registration checks. A failed `develop` clears prior develop/finish
+   completion; older files may remain for comparison but are not current output.
 
 8. **Finish.** `$PY $R finish --job JOB` writes `JOB/out/NAME-presentation.png` (16-bit), a JPEG copy, and `manifest.json`. Inspect the JPEG: some image viewers render 16-bit PNGs with false banding. `final_verify` (one score per piece) must be at least 0.85 for every piece or nothing is written. **Look at the result** before you hand it over, and report the path, the energy, the warnings, and the cost of the calls you made.
 
@@ -112,4 +142,5 @@ Defaults (all on fal): image `openai/gpt-image-2.5/flare/edit`, video `fal-ai/kl
 
 - For a steep side view, where one pair of the frame's edges stays parallel in the image, the proportion check depends on a normal-lens assumption. Keep views straight on or gently angled.
 - A person who stands entirely inside the frame's outline (never overlapping the wall around it) is treated as distortion and dropped.
+- Registration needs visible, stable texture. Nearly blank scenes, heavy occlusion, large exposure changes, zoom, parallax, and nonrigid scene changes can fail alignment or leave artifacts. Per-frame correction handles translation and rotation; it cannot establish correctness for those other changes. Keep architectural anchors visible and inspect the exposure.
 - Scene resolution is the image model's (2K by default). The video only contributes the activity layer, so it does not limit sharpness.

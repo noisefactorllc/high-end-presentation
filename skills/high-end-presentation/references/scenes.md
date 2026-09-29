@@ -11,6 +11,7 @@ Rules for every scene text:
 - Give the lens and distance. The lens sets the field of view; no later stage changes it.
 - Make the piece fill 35 to 60 percent of the frame width. Smaller pieces fail the gate.
 - Leave open floor in front of the piece, so people can pass it and stop to look.
+- Keep stable architectural edges or material texture visible around the piece. Avoid a featureless surround or activity that hides all background anchors; registration needs stationary detail beyond the moving subjects.
 - Say nothing about people in the `scene` text. The reference still must be empty.
 - Do not ask for signs, boards, or anything with words. The runner forbids text in the still; image models add lettering whenever a scene invites it.
 

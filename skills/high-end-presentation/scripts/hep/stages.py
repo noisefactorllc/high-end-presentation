@@ -303,7 +303,17 @@ def video(job, timeout=900):
 def develop(job):
     job.require("video")
     plate, mask = _plate(job)
-    st = timelapse.stack(job.file("video", "clip.mp4"), plate)
+    # A failed re-development must not authorize finish against older output.
+    for stage in ("develop", "finish"):
+        job.data["stages"].pop(stage, None)
+    job.data.pop("develop", None)
+    job.save()
+    try:
+        st = timelapse.stack(job.file("video", "clip.mp4"), plate)
+    except ValueError as exc:
+        job.data["develop"] = {"notes": [str(exc)]}
+        job.save()
+        raise
     out, report = timelapse.develop(plate, st, mask, job["energy"], glazed=job.get("glazed", False))
     np.save(job.file("develop", "activity.npy"), report.pop("activity"))
     np.save(job.file("develop", "exposure.npy"), out.astype(np.float16))
@@ -313,7 +323,9 @@ def develop(job):
     return {"report": report, "preview": str(job.file("develop", "exposure-preview.jpg")), "next": "finish"}
 
 
-DEVELOP_WARNINGS = ("camera-moved", "no-motion", "background:median")
+DEVELOP_WARNINGS = ("camera-moved", "no-motion", "background:median", "video-coverage:",
+                    "registration:initial:", "registration:frame:", "registration:frame-count:",
+                    "registration:empty-video", "registration:coverage:")
 
 
 def _warnings(job):

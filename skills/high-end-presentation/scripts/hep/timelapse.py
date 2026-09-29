@@ -87,19 +87,17 @@ class Stack:
     moved: bool
     notes: list = field(default_factory=list)
     exposures: list = field(default_factory=list)  # [(frame_lin f16, presence f16)] in clip order
+    coverage: np.ndarray | None = None  # canvas pixels observed in every registered frame
 
 
 def register(frame0, plate):
-    """Homography video px -> plate px. Falls back to a centered cover-fit when
-    features do not match (for example a nearly blank scene)."""
+    """Measured homography video px -> plate px; never guess a crop."""
     loc = locate.find_piece(frame0, plate, piece_side=1400, scene_side=1400, min_inliers=40)
-    fh, fw = frame0.shape[:2]
-    ph, pw = plate.shape[:2]
-    if loc.ok:
-        return loc.H, "sift"
-    s = max(pw / fw, ph / fh)
-    tx, ty = (pw - fw * s) / 2, (ph - fh * s) / 2
-    return np.array([[s, 0, tx], [0, s, ty], [0, 0, 1]], np.float64), "cover-fit"
+    if not loc.ok:
+        raise ValueError(f"registration:initial:{loc.reason}: video could not be aligned to the plate")
+    if not np.isfinite(loc.H).all() or abs(np.linalg.det(loc.H)) < 1e-10:
+        raise ValueError("registration:initial:invalid-transform")
+    return loc.H, "sift"
 
 
 def _gray_small(frame, s):
@@ -110,10 +108,30 @@ def _gray_small(frame, s):
 def _jitter(g0, gt, s):
     """3x3 map frame_t px -> frame_0 px from ECC (Euclidean) at scale s."""
     W = np.eye(2, 3, dtype=np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-5)
     try:
-        _, W = cv2.findTransformECC(g0, gt, W, cv2.MOTION_EUCLIDEAN,
-                                    (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-5), None, 5)
+        _, W = cv2.findTransformECC(g0, gt, W, cv2.MOTION_EUCLIDEAN, criteria, None, 5)
     except cv2.error:
+        return np.eye(3), False
+    if not np.isfinite(W).all():
+        return np.eye(3), False
+    # People and changing artwork are not camera anchors. Refine on the
+    # agreeing background, with a margin around moving edges. ECC's mask is
+    # in input (gt) coordinates, not template (g0) coordinates.
+    aligned = cv2.warpAffine(gt, W, (g0.shape[1], g0.shape[0]),
+                             flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
+    valid = cv2.warpAffine(np.ones_like(gt), W, (g0.shape[1], g0.shape[0]),
+                           flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP) >= 0.999
+    stable = ((np.abs(aligned - g0) < 0.06) & valid).astype(np.uint8)
+    stable = cv2.erode(stable, np.ones((5, 5), np.uint8))
+    if stable.mean() < 0.35 or g0[stable > 0].std() < 0.01:
+        return np.eye(3), False
+    mask = cv2.warpAffine(stable, W, (gt.shape[1], gt.shape[0]), flags=cv2.INTER_NEAREST)
+    try:
+        score, W = cv2.findTransformECC(g0, gt, W, cv2.MOTION_EUCLIDEAN, criteria, mask, 5)
+    except cv2.error:
+        return np.eye(3), False
+    if not np.isfinite(score) or score < 0.85 or not np.isfinite(W).all():
         return np.eye(3), False
     W3 = np.vstack([W, [0, 0, 1]]).astype(np.float64)
     S = np.diag([s, s, 1.0])
@@ -131,22 +149,34 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
         # canvas at roughly video pixel density
         canvas_scale = min(1.0, np.sqrt((info["width"] * info["height"]) / float(pw * ph)) * 1.05)
     cw, ch = round(pw * canvas_scale), round(ph * canvas_scale)
-    Mc = np.diag([canvas_scale, canvas_scale, 1.0]) @ H
+    # Match cv2.resize's pixel-center convention, including rounded dimensions.
+    sx, sy = cw / pw, ch / ph
+    Mc = np.array([[sx, 0, (sx - 1) / 2], [0, sy, (sy - 1) / 2], [0, 0, 1]]) @ H
+    canvas_plate = cv2.resize(plate, (cw, ch), interpolation=cv2.INTER_AREA)
+    coverage = np.ones((ch, cw), bool)
     es = min(1.0, 320.0 / max(frame0.shape[:2]))
     g0 = _gray_small(frame0, es)
     notes = [f"registration:{how}"]
 
-    jit, shifts, failures = {}, [], 0
+    jit, shifts = {}, []
+    frame_corners = locate.corners(frame0.shape[1], frame0.shape[0])
 
     def warped(i, f):
-        nonlocal failures
         J = np.eye(3)
         if jitter and i > 0:
             J, ok = _jitter(g0, _gray_small(f, es), es)
-            failures += (not ok)
+            if not ok:
+                raise ValueError(f"registration:frame:{i}: alignment failed or correlation below 0.85")
         jit[i] = J
-        shifts.append(float(np.hypot(J[0, 2], J[1, 2]) / f.shape[1]))
-        return cv2.warpPerspective(f, Mc @ J, (cw, ch), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        displaced = cv2.perspectiveTransform(frame_corners[None], J)[0]
+        shifts.append(float(np.linalg.norm(displaced - frame_corners, axis=1).max() / f.shape[1]))
+        W = Mc @ J
+        valid = cv2.warpPerspective(np.ones(f.shape[:2], np.float32), W, (cw, ch),
+                                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT) >= 0.999
+        coverage[:] &= valid
+        a = cv2.warpPerspective(f, W, (cw, ch), flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT)
+        return np.where(valid[..., None], a, canvas_plate)
 
     # pass 1: register every frame; keep the clip's ends and a median subsample.
     # The video starts and ends on the clean plate, so its ends are the true
@@ -162,7 +192,15 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
         tail.append(a)
         if i % step == 0:
             samples.append((a * 255 + 0.5).astype(np.uint8))
-    ends_gap = float(np.abs(np.mean(head, 0) - np.mean(tail, 0)).mean())
+    if not jit:
+        raise ValueError("registration:empty-video")
+    # Use one shared support region for background, activity, and every exposure.
+    coverage = cv2.erode(coverage.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    if coverage.mean() < 0.5:
+        raise ValueError("registration:coverage: less than half the plate is observed in every frame")
+    if coverage.mean() < 0.98:
+        notes.append(f"video-coverage:{coverage.mean():.4f}: unobserved borders retain the plate")
+    ends_gap = float(np.abs(np.mean(head, 0) - np.mean(tail, 0))[coverage].mean())
     if ends_gap < 0.03:
         B_srgb = np.mean(list(head) + list(tail), 0).astype(np.float32)
         notes.append("background:clip-ends")
@@ -170,6 +208,7 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
         B_srgb = np.median(np.stack(samples), axis=0).astype(np.float32) / 255.0
         notes.append(f"background:median (clip ends differ by {ends_gap:.3f}; long-standing viewers may vanish)")
     del samples, head, tail
+    B_srgb = np.where(coverage[..., None], B_srgb, canvas_plate)
     B = color.srgb_to_linear(B_srgb)
 
     # pass 2: presence, colors, lighten, mean; keep evenly spaced exposures
@@ -183,8 +222,11 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
     rows, cols = np.indices(B.shape[:2])
     n = 0
     for i, f in media.iter_frames(video_path):
-        a = cv2.warpPerspective(f, Mc @ jit.get(i, np.eye(3)), (cw, ch), flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_REPLICATE)
+        if i not in jit:
+            raise ValueError(f"registration:frame:{i}: video changed between passes")
+        a = cv2.warpPerspective(f, Mc @ jit[i], (cw, ch), flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT)
+        a = np.where(coverage[..., None], a, canvas_plate)
         lin = color.srgb_to_linear(a)
         w = smoothstep(0.035, 0.09, np.abs(a - B_srgb).max(-1))
         sumM += lin
@@ -199,18 +241,18 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
         if i in picks:
             exposures.append((lin.astype(np.float16), w.astype(np.float16)))
         n += 1
+    if n != len(jit):
+        raise ValueError("registration:frame-count: video changed between passes")
     L = top.mean(0) if n >= TRAIL_TOP_K else top.max(0)
     del top, top_l
     P = (sumP / max(n, 1)).astype(np.float32)
     C = np.where(sumP[..., None] > 1e-6, sumC / np.maximum(sumP[..., None], 1e-6), B).astype(np.float32)
     M = (sumM / max(n, 1)).astype(np.float32)
     max_shift = max(shifts) if shifts else 0.0
-    if failures:
-        notes.append(f"jitter-estimate-failed-frames:{failures}")
     moved = max_shift > 0.01
     if moved:
         notes.append(f"camera-moved:{max_shift:.3f}")
-    return Stack(B, M, L, P, C, canvas_scale, n, max_shift, moved, notes, exposures)
+    return Stack(B, M, L, P, C, canvas_scale, n, max_shift, moved, notes, exposures, coverage)
 
 
 def _up(a, shape):
@@ -317,8 +359,14 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None, glazed=False):
         refl = (e["trail_gain"] * full_T + 0.35 * np.maximum(G, 0)) * display[..., None]
         out = out + GLASS_REFLECTION * _up(refl, shape)
         activity = np.maximum(activity, np.clip(color.luma(refl) / 0.03, 0, 1))
+    support = np.ones(st.B.shape[:2], np.float32) if st.coverage is None else st.coverage.astype(np.float32)
+    # Interpolation and blur must not leak activity back into unseen plate pixels.
+    full_support = (_up(support, shape) >= 0.999).astype(np.float32)
+    out = plate_lin + full_support[..., None] * (out - plate_lin)
+    activity *= support
     report = {
         "frames": st.count,
+        "registration_coverage": round(float(support.mean()), 4),
         "ghost_density": round(float(k), 3),
         "canvas_scale": round(st.canvas_scale, 4),
         "presence_mean": round(float(st.P.mean()), 4),
@@ -334,5 +382,5 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None, glazed=False):
     }
     if st.P.mean() < 0.002:
         report["notes"].append("no-motion: the video shows almost no activity")
-    report["activity"] = _up(activity, shape).astype(np.float16)
+    report["activity"] = (_up(activity, shape) * full_support).astype(np.float16)
     return np.clip(out, 0, None).astype(np.float32), report

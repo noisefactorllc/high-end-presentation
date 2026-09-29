@@ -293,3 +293,30 @@ def test_repeat_needs_one_piece(tmp_path):
     p = media.save_image(tmp_path / "p.png", textured_piece(40, 40))
     with pytest.raises(JobError, match="exactly one piece"):
         stages.init(tmp_path / "j", [p, p], "x", repeat=4)
+
+
+def test_failed_registration_invalidates_previous_development(setup, monkeypatch):
+    tmp, pp, _ = setup
+    root = tmp / "job"
+    stages.init(root, pp, "gallery")
+    job = Job(root)
+    stages.analyze(job)
+    stages.brief(job, json.loads(_brief(tmp).read_text()))
+    stages.still(job)
+    stages.video(job)
+    job.done("develop")
+    job.done("finish")
+    job.data["develop"] = {"notes": ["old-success"]}
+    job.save()
+
+    def fail(*args, **kwargs):
+        raise ValueError("registration:frame:4: alignment failed")
+    monkeypatch.setattr(stages.timelapse, "stack", fail)
+    with pytest.raises(ValueError, match="registration:frame:4"):
+        stages.develop(job)
+    reloaded = Job(root)
+    assert not reloaded.is_done("develop")
+    assert not reloaded.is_done("finish")
+    assert any("registration:frame:4" in n for n in stages.status(reloaded)["warnings"])
+    with pytest.raises(JobError, match="develop"):
+        stages.finish(reloaded)

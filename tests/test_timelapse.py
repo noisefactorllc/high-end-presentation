@@ -167,3 +167,82 @@ def test_single_frame_flash_fades_but_steady_light_stays(tmp_path):
     fast = srgb[400, 60:360].mean() - plate[400, 60:360].mean()
     slow = srgb[120, 125:145].mean() - plate[120, 125:145].mean()
     assert slow > 2 * fast
+
+
+def test_unmatched_reference_is_not_guessed():
+    plate = _scene_with_texture()
+    unrelated = np.full_like(plate, 0.4)
+    with pytest.raises(ValueError, match="registration:initial"):
+        timelapse.register(unrelated, plate)
+
+
+def test_failed_jitter_stops_compositing(tmp_path, monkeypatch):
+    plate = _scene_with_texture()
+    monkeypatch.setattr(timelapse, "_jitter", lambda *args: (np.eye(3), False))
+    with pytest.raises(ValueError, match="registration:frame:1"):
+        timelapse.stack(_write(tmp_path / "v.mp4", [plate] * 4), plate)
+
+
+def test_low_correlation_is_not_success(monkeypatch):
+    def low_score(*args):
+        return 0.2, np.eye(2, 3, dtype=np.float32)
+    monkeypatch.setattr(cv2, "findTransformECC", low_score)
+    g = np.random.default_rng(4).random((80, 80)).astype(np.float32)
+    _, ok = timelapse._jitter(g, g, 1.0)
+    assert not ok
+
+
+@pytest.mark.parametrize("glazed", [False, True])
+def test_crop_does_not_extend_moving_light_into_missing_border(tmp_path, glazed):
+    plate = _scene_with_texture(480, 384)
+    frames = []
+    for i in range(24):
+        f = plate[48:432, 40:344].copy()
+        if 4 <= i < 20:
+            cv2.rectangle(f, (0, 200), (12, 230), (1, 1, 1), -1)
+        frames.append(f)
+    st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
+    mask = np.ones(plate.shape[:2], np.float32) if glazed else _full_mask(plate)
+    out, report = timelapse.develop(plate, st, mask, "bustling", glazed=glazed)
+    diff = np.abs(out - color.srgb_to_linear(plate))
+    assert diff[:, :30].max() < 1e-6
+    assert diff[:35].max() < 1e-6
+    assert diff[250:270, 44:50].mean() > 0.02  # real activity still survives
+    assert 0.5 < report["registration_coverage"] < 0.8
+
+
+def test_camera_rotation_is_measured_at_frame_corners(tmp_path):
+    plate = _scene_with_texture()
+    frames = []
+    for angle in [0, 1.0, 2.0, 1.0, 0]:
+        # Rotation about the origin has no translation component.
+        M = cv2.getRotationMatrix2D((0, 0), angle, 1.0)
+        frames.append(cv2.warpAffine(plate, M, (384, 480), borderMode=cv2.BORDER_REFLECT))
+    st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
+    assert st.moved
+    assert st.max_shift > 0.02
+
+
+
+def test_registration_keeps_background_fixed_while_person_and_camera_move(tmp_path):
+    plate = _scene_with_texture()
+    frames = []
+    for i in range(24):
+        f = plate.copy()
+        if 3 <= i < 21:
+            cv2.rectangle(f, (40 + i * 7, 200), (80 + i * 7, 360), (0.05, 0.05, 0.05), -1)
+        W = cv2.getRotationMatrix2D((192, 240), np.sin(i) * 0.4, 1.0)
+        W[:, 2] += [2 * np.sin(i), 1.5 * np.cos(i)]
+        frames.append(cv2.warpAffine(f, W, (384, 480), borderMode=cv2.BORDER_REFLECT))
+    st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
+    out, _ = timelapse.develop(plate, st, _full_mask(plate), "calm")
+    diff = np.abs(color.linear_to_srgb(out) - plate)
+    assert np.percentile(diff[30:160, 30:-30], 99) < 0.03
+    assert diff[210:350, 80:220].mean() > 0.02
+
+
+def test_insufficient_shared_coverage_stops_compositing(tmp_path):
+    plate = textured_piece(480, 384, seed=3)
+    crop = plate[120:360, 96:288].copy()
+    with pytest.raises(ValueError, match="registration:coverage"):
+        timelapse.stack(_write(tmp_path / "v.mp4", [crop] * 4), plate)
