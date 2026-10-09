@@ -30,9 +30,18 @@ else
     if command -v uv >/dev/null 2>&1; then
         uv venv --python '>=3.12' .venv
     else
-        python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' ||
-            { echo "scripts/test: Python >= 3.12 is required (the pinned numpy needs it); found '$(python3 -V 2>&1)'. Install Python 3.12+ or uv." >&2; exit 1; }
-        python3 -m venv .venv
+        # pick an installed interpreter the pins support; fail clearly if none
+        PY=""
+        for cand in python3.14 python3.13 python3.12 python3 python; do
+            if command -v "$cand" >/dev/null 2>&1 &&
+               "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+                PY=$cand
+                break
+            fi
+        done
+        [ -n "$PY" ] ||
+            { echo "scripts/test: no Python >= 3.12 found (the pinned numpy needs it); install Python 3.12+ or uv." >&2; exit 1; }
+        "$PY" -m venv .venv
     fi
     install_reqs
 fi
