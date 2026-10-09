@@ -1,79 +1,19 @@
 #!/bin/sh
-# Run the repository's test suite. Creates a throwaway venv first.
-#
-# The check container may lack ensurepip (Debian pythons) and may have a
-# noexec /tmp, so this: probes candidate roots for write+exec capability,
-# prefers `uv venv` (bootstraps without ensurepip) over `python3 -m venv`,
-# and needs Python >= 3.12 (numpy 2.5.3 in tests/requirements.txt requires
-# it; `uv` downloads a managed CPython when only older ones exist).
+# Run the repository's test suite (see README "Development"). Reuses .venv
+# when present; otherwise builds one. uv is used when available: it can
+# bootstrap a venv on pythons that lack ensurepip, and it can provide a
+# Python >= 3.12, which the pinned numpy (tests/requirements.txt) requires.
 set -eu
-
 cd "$(dirname "$0")/.."
 
-VENV_NAME=.hep-test-venv
-
-# find a root that is writable AND executable: some /tmp mounts are noexec
-probe_root() {
-    d=$1
-    [ -n "$d" ] || return 1
-    mkdir -p "$d" 2>/dev/null || return 1
-    f="$d/$VENV_NAME.probe.$$"
-    if printf '#!/bin/sh\nexit 0\n' > "$f" 2>/dev/null &&
-       chmod +x "$f" 2>/dev/null && "$f" 2>/dev/null; then
-        rm -f "$f"
-        return 0
-    fi
-    rm -f "$f" 2>/dev/null
-    return 1
-}
-
-VENV_ROOT=""
-for d in "${HEP_TEST_VENV:-}" "${TMPDIR:-}" /state/cache/scratch /var/tmp /tmp .; do
-    if probe_root "$d"; then
-        VENV_ROOT=$d
-        break
-    fi
-done
-if [ -z "$VENV_ROOT" ]; then
-    echo "scripts/test: no writable+executable directory found for a venv" >&2
-    exit 1
-fi
-VENV="$VENV_ROOT/$VENV_NAME"
-
-# pick a Python >= 3.12; uv can fetch one when the system has none
-PY=""
-for cand in python3.14 python3.13 python3.12 python3; do
-    if command -v "$cand" >/dev/null 2>&1 &&
-       "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
-        PY=$cand
-        break
-    fi
-done
-
-rm -rf "$VENV"
-if command -v uv >/dev/null 2>&1; then
-    if [ -n "$PY" ]; then
-        uv venv --python "$PY" "$VENV"
+if [ ! -x .venv/bin/python ]; then
+    rm -rf .venv
+    if command -v uv >/dev/null 2>&1; then
+        uv venv --python '>=3.12' .venv
+        uv pip install --python .venv/bin/python -r tests/requirements.txt
     else
-        # resolves the best >= 3.12 known to uv (downloads one if allowed)
-        uv venv --python '>=3.12' "$VENV"
+        python3 -m venv .venv
+        .venv/bin/python -m pip install -r tests/requirements.txt
     fi
-    uv pip install --python "$VENV/bin/python" -r tests/requirements.txt
-else
-    if [ -z "$PY" ]; then
-        echo "scripts/test: no Python >= 3.12 and no uv; install Python 3.12+ or uv" >&2
-        exit 1
-    fi
-    if ! "$PY" -m venv "$VENV"; then
-        rm -rf "$VENV"
-        echo "scripts/test: '$PY -m venv' failed (missing ensurepip?); install uv and rerun" >&2
-        exit 1
-    fi
-    "$VENV/bin/python" -m pip install -r tests/requirements.txt
 fi
-
-# compiled .so files fail to map on noexec mounts; catch that here
-"$VENV/bin/python" -c 'import _ssl' ||
-    { echo "scripts/test: venv at $VENV cannot map its own .so files (noexec mount?)" >&2; exit 1; }
-
-exec "$VENV/bin/python" -m pytest tests -q "$@"
+exec .venv/bin/python -m pytest tests -q "$@"
