@@ -1,19 +1,39 @@
 #!/bin/sh
 # Run the repository's test suite (see README "Development"). Reuses .venv
-# when present; otherwise builds one. uv is used when available: it can
-# bootstrap a venv on pythons that lack ensurepip, and it can provide a
-# Python >= 3.12, which the pinned numpy (tests/requirements.txt) requires.
+# when it is a suitable environment, synchronizing the pinned requirements
+# into it either way, so a stale or half-built venv cannot go unnoticed.
+# uv is used when available: it can bootstrap a venv on pythons that lack
+# ensurepip, and it can provide a Python >= 3.12, which the pinned numpy
+# (tests/requirements.txt) requires.
 set -eu
 cd "$(dirname "$0")/.."
 
-if [ ! -x .venv/bin/python ]; then
+reqs=tests/requirements.txt
+
+install_reqs() {
+    if command -v uv >/dev/null 2>&1; then
+        uv pip install --python .venv/bin/python -r "$reqs"
+    else
+        # a venv created by uv has no pip; ensurepip can add one
+        .venv/bin/python -m pip --version >/dev/null 2>&1 ||
+            .venv/bin/python -m ensurepip ||
+            { echo "scripts/test: no pip in .venv and no uv on PATH; install uv and rerun" >&2; exit 1; }
+        .venv/bin/python -m pip install -r "$reqs"
+    fi
+}
+
+if [ -x .venv/bin/python ] &&
+   .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+    install_reqs
+else
     rm -rf .venv
     if command -v uv >/dev/null 2>&1; then
         uv venv --python '>=3.12' .venv
-        uv pip install --python .venv/bin/python -r tests/requirements.txt
     else
+        python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' ||
+            { echo "scripts/test: Python >= 3.12 is required (the pinned numpy needs it); found '$(python3 -V 2>&1)'. Install Python 3.12+ or uv." >&2; exit 1; }
         python3 -m venv .venv
-        .venv/bin/python -m pip install -r tests/requirements.txt
     fi
+    install_reqs
 fi
 exec .venv/bin/python -m pytest tests -q "$@"
