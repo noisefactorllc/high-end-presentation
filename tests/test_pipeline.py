@@ -167,6 +167,40 @@ def test_explicit_frame_is_used(setup):
     assert abs(media.load_image(tmp / "fj/piece-0.png").mean() - 175 / 255) < 0.02
 
 
+def _scene_for_piece(piece, quad):
+    bg = np.clip(0.6 * plain_scene(640, 512) + 0.4 * textured_piece(640, 512, seed=3), 0, 1).astype(np.float32)
+    scene, _ = place(cv2.GaussianBlur(piece, (0, 0), 0.8), bg, quad)
+    return scene
+
+
+def test_new_plate_gets_a_fresh_depth_map(setup):
+    tmp, pp, fake = setup
+    depth_ep = "fal-ai/image-preprocessors/depth-anything/v2"
+    root = tmp / "job"
+    stages.init(root, pp, "gallery", energy="calm")
+    job = Job(root)
+    stages.analyze(job)
+    stages.brief(job, json.loads(_brief(tmp).read_text()))
+    stages.still(job)
+    stages.draft(job)
+    assert fake.calls.count(depth_ep) == 1
+    # A changed brief reruns `still` onto a new plate; its depth map must not
+    # be the one made for the scene it replaced.
+    fake.scene_img = _scene_for_piece(textured_piece(300, 400, seed=7),
+                                      [[236, 160], [556, 170], [550, 410], [240, 402]])
+    b = json.loads(_brief(tmp).read_text())
+    b["scene"] = "A different room."
+    stages.brief(job, b)
+    s = stages.still(job)
+    assert s["passed"]
+    stages.draft(job)
+    assert fake.calls.count(depth_ep) == 2
+    # Rerunning `still` on the unchanged scene keeps the cache (no new call).
+    stages.still(job)
+    stages.draft(job)
+    assert fake.calls.count(depth_ep) == 2
+
+
 def _pair_scene(place_right=True):
     left = textured_piece(240, 240, seed=11)
     right = textured_piece(240, 240, seed=12)

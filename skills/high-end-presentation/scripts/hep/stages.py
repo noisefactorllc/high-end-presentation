@@ -1,4 +1,5 @@
 """Pipeline stages. Each takes a Job and returns a JSON-able summary."""
+import hashlib
 import json
 from pathlib import Path
 
@@ -197,6 +198,7 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
         job.data["located"] = located
         job.data["verify_images"] = images
         job.data["plate_size"] = [plate.shape[1], plate.shape[0]]
+        job.data["plate_key"] = _plate_key(path)
         job.done("still", attempt=n, screens=summary)
         return {"passed": True, "attempt": n, "screens": summary,
                 "plate_preview": str(job.file("still", "plate-preview.jpg")), "reference": str(path),
@@ -215,6 +217,7 @@ def still(job, attempts=3, timeout=600, image_endpoint=None):
         np.save(job.file("still", "mask.npy"), mask.astype(np.float16))
         job.data["located"] = [g.located.to_json() for g in gates]
         job.data["plate_size"] = [plate.shape[1], plate.shape[0]]
+        job.data["plate_key"] = _plate_key(path)
         summary = [{"composition": round(g.corr, 4), "worst_tile": round(g.worst, 4),
                     "color_shift": round(g.color_shift, 2), "aspect_error": round(g.aspect_error, 4)}
                    for g in gates]
@@ -253,12 +256,24 @@ def _plate(job):
     return plate, mask
 
 
+def _plate_key(path):
+    """Identity of the scene rendering the current plate was built from.
+
+    Rerunning `still` re-locates the piece with randomized RANSAC, so the
+    re-derived plate is not byte-stable; the attempt image is."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+
+
 def _depth(job, plate, timeout=300):
-    p = job.root / "depth.png"
+    ep = job["endpoints"]["depth"]
+    args = endpoints.depth_args(ep, fal.data_uri(plate, max_side=2048))
+    # Cached per scene: a new plate (rerun `still` on a changed brief) gets a
+    # fresh depth map instead of one made for the scene it replaced, while a
+    # re-accepted attempt keeps reusing its cache. Jobs whose plate predates
+    # the key fall back to the request digest.
+    p = job.root / f"depth-{job.get('plate_key') or fal.args_digest(args)}.png"
     if not p.exists():
-        ep = job["endpoints"]["depth"]
-        res = _client().run(ep, endpoints.depth_args(ep, fal.data_uri(plate, max_side=2048)),
-                            job.data["fal"], "depth", timeout, job.save)
+        res = _client().run(ep, args, job.data["fal"], "depth", timeout, job.save)
         fal.download(endpoints.depth_url(res), p)
     d = media.load_image(p).mean(-1)
     return cv2.resize(d, (plate.shape[1], plate.shape[0]), interpolation=cv2.INTER_LINEAR)
