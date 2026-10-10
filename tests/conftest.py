@@ -1,4 +1,5 @@
 import sys
+import weakref
 from pathlib import Path
 
 import cv2
@@ -45,6 +46,23 @@ def place(piece, scene, quad):
     mask = cv2.warpPerspective(np.ones((h, w), np.float32), H, (scene.shape[1], scene.shape[0]))
     out = scene * (1 - mask[..., None]) + warped * mask[..., None]
     return out.astype(np.float32), H
+
+
+def track_frame_liveness(monkeypatch, media_mod):
+    """Patch media_mod.iter_frames to report the peak number of yielded video
+    frames alive at the same time (tracked by weakref). Returns the state dict."""
+    orig = media_mod.iter_frames
+    state = {"peak": 0}
+    refs = []
+
+    def counting(path, step=1):
+        for i, f in orig(path, step=step):
+            refs.append(weakref.ref(f))
+            state["peak"] = max(state["peak"], sum(r() is not None for r in refs))
+            yield i, f
+
+    monkeypatch.setattr(media_mod, "iter_frames", counting)
+    return state
 
 
 @pytest.fixture

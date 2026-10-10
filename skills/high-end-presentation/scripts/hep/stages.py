@@ -78,9 +78,16 @@ def analyze(job):
         media.save_image(job.file(f"piece-{i}.png"), still)
         previews.append(str(media.save_image(job.file(f"piece-{i}-preview.jpg"), still)))
         if job.get("echo") and media.is_video(src):
-            frames = [f for _, f in media.iter_frames(src, step=max(1, result["source"]["frames"] // 48))]
-            echo = color.linear_to_srgb(np.mean([color.srgb_to_linear(f) for f in frames], 0))
-            media.save_image(job.file(f"piece-{i}-echo.png"), echo)
+            # Stream the sampled frames: their mean is accumulated in place, so
+            # a long or 4K clip is never held whole in memory.
+            acc, count = None, 0
+            for _, f in media.iter_frames(src, step=max(1, result["source"]["frames"] // 48)):
+                lin = color.srgb_to_linear(f)
+                acc = lin.astype(np.float64) if acc is None else acc + lin
+                count += 1
+            if count:
+                echo = color.linear_to_srgb((acc / count).astype(np.float32))
+                media.save_image(job.file(f"piece-{i}-echo.png"), echo)
         results.append(result)
     job.data["analysis"] = {"pieces": results, "palette": _merged_palette([r["palette"] for r in results])}
     job.done("analyze")

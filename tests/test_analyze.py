@@ -38,6 +38,23 @@ def test_representative_frame_skips_black_and_blur(tmp_path, piece):
     assert index >= 32
 
 
+def test_representative_frame_streams_instead_of_holding_frames(tmp_path, monkeypatch, piece):
+    from conftest import track_frame_liveness
+    from hep import media
+    clip = tmp_path / "c.mp4"
+    h, w = piece.shape[:2]
+    sharp = (piece[..., ::-1] * 255).astype(np.uint8)
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 24, (w, h))
+    for i in range(30):
+        vw.write(sharp if i >= 20 else cv2.GaussianBlur(sharp, (0, 0), 8))
+    vw.release()
+    state = track_frame_liveness(monkeypatch, media)
+    index, frame = analyze.representative_frame(clip, samples=8)
+    assert index >= 20  # a sharp frame is still chosen over blurred ones
+    assert state["peak"] <= 4  # sampled frames are measured one at a time
+    assert np.allclose(frame, media.read_frame(clip, index), atol=1e-6)
+
+
 def test_analyze_piece_still(tmp_path, piece):
     from hep import media
     p = media.save_image(tmp_path / "piece.png", piece)

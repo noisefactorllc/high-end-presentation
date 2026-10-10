@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 import hep as _pkg  # noqa: F401  (conftest puts scripts/ on the path)
-from conftest import place, plain_scene, textured_piece
-from hep import media, stages
+from conftest import place, plain_scene, textured_piece, track_frame_liveness
+from hep import color, media, stages
 from hep.job import Job, JobError
 import importlib.util
 from pathlib import Path
@@ -165,6 +165,26 @@ def test_explicit_frame_is_used(setup):
     stages.analyze(job)
     assert job["analysis"]["pieces"][0]["source"]["frame_index"] == 7
     assert abs(media.load_image(tmp / "fj/piece-0.png").mean() - 175 / 255) < 0.02
+
+
+def test_echo_streams_frames_and_matches_the_frame_mean(setup, monkeypatch):
+    tmp, _, _ = setup
+    base = textured_piece(300, 400, seed=7)
+    clip = tmp / "echo-src.mp4"
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 24, (400, 300))
+    for i in range(48):
+        f = np.roll(base, i * 2, axis=1) if i >= 24 else base
+        vw.write((f[..., ::-1] * 255 + 0.5).astype(np.uint8))
+    vw.release()
+    root = tmp / "ejob"
+    stages.init(root, clip, "gallery", echo=True)
+    job = Job(root)
+    state = track_frame_liveness(monkeypatch, media)
+    stages.analyze(job)
+    assert state["peak"] <= 4  # the echo mean is accumulated while streaming
+    echo = media.load_image_any_depth(root / "piece-0-echo.png")
+    ref = np.mean([color.srgb_to_linear(f) for _, f in media.iter_frames(clip)], 0)
+    assert np.allclose(echo, color.linear_to_srgb(ref), atol=1e-4)
 
 
 def _scene_for_piece(piece, quad):

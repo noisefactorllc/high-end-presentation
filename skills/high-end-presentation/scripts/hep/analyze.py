@@ -56,20 +56,23 @@ def _sharpness(img):
 
 
 def representative_frame(path, samples=24):
-    """Pick the frame that is sharp and close to the clip's average look."""
+    """Pick the frame that is sharp and close to the clip's average look.
+
+    Two streaming passes measure the sampled frames (one at a time) and only
+    the chosen frame is decoded again, so a 4K clip never sits in memory."""
     info = media.video_info(path)
     total = max(info["frames"], 1)
     step = max(1, total // samples)
-    cands = [(i, f) for i, f in media.iter_frames(path, step=step)]
-    if not cands:
+    means = np.array([color.rgb_to_lab(_work_size(f, 64)).reshape(-1, 3).mean(0)
+                      for _, f in media.iter_frames(path, step=step)])
+    if not len(means):
         raise ValueError(f"no frames in {path}")
-    means = np.array([color.rgb_to_lab(_work_size(f, 64)).reshape(-1, 3).mean(0) for _, f in cands])
     center = np.median(means, 0)
     dist = np.linalg.norm(means - center, axis=1)
-    sharp = np.array([_sharpness(f) for _, f in cands])
+    sharp = np.array([_sharpness(f) for _, f in media.iter_frames(path, step=step)])
     score = (sharp / (sharp.max() + 1e-9)) - 0.5 * (dist / (dist.max() + 1e-9))
-    best = int(np.argmax(score))
-    return cands[best][0], cands[best][1]
+    index = int(np.argmax(score)) * step
+    return index, media.read_frame(path, index)
 
 
 def analyze_piece(path):
