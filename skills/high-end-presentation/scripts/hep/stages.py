@@ -30,8 +30,11 @@ def _client():
 
 def init(root, pieces, prompt, *, scene="freeform", energy="calm", aspect="4:5", resolution="2K",
          duration=10, echo=False, frame=None, name=None, image_endpoint=None, video_endpoint=None,
-         repeat=None, display_mode="flat"):
+         repeat=None, display_mode="flat", timelapse_piece=True):
     pieces = [pieces] if isinstance(pieces, (str, Path)) else list(pieces)
+    if echo and timelapse_piece:
+        raise JobError("--echo adds motion to a single frame; a time-lapse already shows it. "
+                       "Add --no-timelapse to present one frame with an echo")
     if not 1 <= len(pieces) <= MAX_PIECES:
         raise JobError(f"give between 1 and {MAX_PIECES} pieces")
     if repeat is not None and (len(pieces) != 1 or not 2 <= int(repeat) <= MAX_REPEAT):
@@ -51,7 +54,7 @@ def init(root, pieces, prompt, *, scene="freeform", energy="calm", aspect="4:5",
     job = Job.create(root, {
         "pieces": [str(p) for p in pieces], "prompt": prompt, "scene": scene, "energy": energy,
         "aspect": aspect, "resolution": resolution, "duration": int(duration), "echo": bool(echo),
-        "frame": frame, "name": name or pieces[0].stem,
+        "frame": frame, "timelapse": bool(timelapse_piece), "name": name or pieces[0].stem,
         "repeat": int(repeat) if repeat is not None else None, "display": display_mode,
         "glazed": scene in GLAZED_SCENES,
         "endpoints": {"image": image_endpoint or endpoints.IMAGE_DEFAULT,
@@ -71,10 +74,8 @@ def analyze(job):
     job.require("init")
     results, previews = [], []
     for i, src in enumerate(job["pieces"]):
-        result, still = analyze_mod.analyze_piece(src)
-        if job.get("frame") is not None and media.is_video(src):
-            still = media.read_frame(src, int(job["frame"]))
-            result["source"]["frame_index"] = int(job["frame"])
+        result, still = analyze_mod.analyze_piece(src, frame=job.get("frame"),
+                                                  timelapse_piece=job.get("timelapse", False))
         media.save_image(job.file(f"piece-{i}.png"), still)
         previews.append(str(media.save_image(job.file(f"piece-{i}-preview.jpg"), still)))
         if job.get("echo") and media.is_video(src):
@@ -111,7 +112,7 @@ def brief(job, data):
 
 
 def _presented_pieces(job):
-    """Each piece as it must appear: its still, or the still with a faint echo."""
+    """Each piece as it must appear: its still or time-lapse, or a frame with a faint echo."""
     out = []
     for i in range(len(job["pieces"])):
         piece = media.load_image_any_depth(job.file(f"piece-{i}.png"))
@@ -361,11 +362,14 @@ def finish(job):
     exposure = np.load(job.file("develop", "exposure.npy")).astype(np.float32)
     out = _look(job, exposure, plate, mask, _look_opts(job))
     activity = np.load(job.file("develop", "activity.npy")).astype(np.float32)
+    # Only the piece's own pixels are compared. Outside the mask (a tube's
+    # rounded corners, the band where a frame meets the piece) the final image
+    # shows the scene by construction; on a dark or sparse piece that band
+    # would outweigh the piece's own detail.
+    activity = np.maximum(activity, 1 - mask)
     if job.get("verify_images"):
-        # each screen must match its own rendering of the original; the tube's
-        # rounded corners (outside the mask) are not part of that rendering
+        # each screen must match its own rendering of the original
         pieces = [media.load_image_any_depth(p) for p in job["verify_images"]]
-        activity = np.maximum(activity, 1 - mask)
     else:
         pieces = _presented_pieces(job)
     scores = [fidelity.verify(p, out, locate.Located.from_json(l), exclude=activity)

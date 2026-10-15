@@ -31,6 +31,8 @@ def main(argv=None):
     ap.add_argument("--duration", type=int, default=10)
     ap.add_argument("--echo", action="store_true", help="moving piece: add a faint echo of its motion")
     ap.add_argument("--frame", type=int, help="moving piece: use this frame instead of the automatic choice")
+    ap.add_argument("--no-timelapse", dest="timelapse", action="store_false",
+                    help="moving piece: present one frame instead of a time-lapse of its clip")
     ap.add_argument("--name")
     ap.add_argument("--repeat", type=int, help="show the one piece on exactly this many screens")
     ap.add_argument("--display", default="flat", help="screen treatment: flat or crt")
@@ -47,7 +49,7 @@ def main(argv=None):
             out = stages.init(a.job, a.piece, a.prompt, scene=a.scene, energy=a.energy, aspect=a.aspect,
                               resolution=a.resolution, duration=a.duration, echo=a.echo, frame=a.frame,
                               name=a.name, image_endpoint=a.image_endpoint, video_endpoint=a.video_endpoint,
-                              repeat=a.repeat, display_mode=a.display)
+                              repeat=a.repeat, display_mode=a.display, timelapse_piece=a.timelapse)
         else:
             job = Job(a.job)
             if a.stage == "brief":

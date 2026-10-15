@@ -5,13 +5,14 @@ description: Use when an artist wants a still image or video of their artwork pr
 
 # High-end presentation
 
-Turn one artwork (a still image or a video) plus a short prompt into one still image. The still shows the piece on display in a synthetic scene, photographed as a multiple long exposure: people appear several times along their paths as translucent figures, people who stop to look build up towards solid, and bright moving lights leave trails. People may cross in front of the piece, as they would in life. Depth of field keeps the piece as the only sharp plane. A subtle grade drawn from the piece's own palette ties the scene together.
+Turn one artwork (a still image or a video) plus a short prompt into one still image. The still shows the piece on display in a synthetic scene, photographed as a multiple long exposure: people appear several times along their paths as translucent figures, people who stop to look build up towards solid, and bright moving lights leave trails. People may cross in front of the piece, as they would in life. A moving piece is time-lapsed too, from its own frames. Depth of field keeps the piece as the only sharp plane. A subtle grade drawn from the piece's own palette ties the scene together.
 
 ## The rule you must not break
 
 The piece's features never change. Shapes, marks, composition, detail, and proportions are the artist's. The scene may light the piece (color of light, falloff, glare, reflections in glass, passing shadows), and people may pass in front of it; nothing may redraw it. The scripts enforce this:
 
 - The reference still is gated. The piece must be found, with its proportions, composition, and colours intact. Fine texture is not gated: image models redraw it, and the repair puts the original pixels back. A failed gate means regenerate, never "use it anyway".
+- A moving piece is time-lapsed by the scripts, never by a model, from its own frames only. The time-lapse is what the image model receives, what the gate checks, and what the final check verifies.
 - The final image carries the artist's own pixels in the piece region, relit by the scene. Inside the frame, only figures that enter from outside it are kept; changes confined to the frame are the video model distorting the artwork and are dropped. `finish` checks the uncovered part of the piece and refuses to write a result that does not verify.
 
 Do not work around a failed gate by loosening thresholds or editing the piece.
@@ -48,8 +49,9 @@ Ask only for what is missing:
 | energy | no | calm | quiet, calm, lively, bustling |
 | aspect | no | 4:5 | 1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9 |
 | resolution | no | 2K | 1K, 2K, 4K (long side of the output) |
-| echo | no | off | moving pieces only: a faint echo of the piece's motion |
-| frame | no | automatic | moving pieces only: the frame index to present |
+| timelapse | no | on | moving pieces only: a time-lapse of the whole clip; `--no-timelapse` presents one frame |
+| echo | no | off | moving pieces with `--no-timelapse` only: a faint echo of the piece's motion |
+| frame | no | automatic | moving pieces only: the frame index that leads the time-lapse, or the frame presented with `--no-timelapse` |
 | repeat | no | off | show the one piece on exactly this many screens (a wall of TVs, a video wall) |
 | display | no | flat | `crt`: the skill renders each screen as a picture tube (curvature, scanlines, phosphor glow, rounded edges) |
 
@@ -63,6 +65,8 @@ Energy sets the life in the scene:
 | bustling | crowd | 14 | 0.38 | dense |
 
 Under the figures, a streak layer blurs each path; its density is solved per clip, so a busy clip does not turn into a veil.
+
+**Moving pieces.** A video piece is time-lapsed over its whole clip. The lead frame (the representative frame, or `--frame N`) is one strong exposure (40%), like a flash during a long exposure; six frames spread evenly through the clip share the rest. Parts of the piece that hold still keep their detail; moving parts appear several times along their paths. `--no-timelapse` presents the lead frame alone; only then can `--echo` add a faint echo of the motion.
 
 **Repeated screens.** With `--repeat N`, one piece appears on exactly N screens. Say the count and the layout in the scene text (for example "a grid of nine televisions, three by three"). Every one of the N screens must be found, or the attempt fails (`screens-found:k/N`): a screen left unfound would keep the model's copy. Each screen shows the whole piece at its true proportions, with dark bars where the screen is wider.
 
@@ -85,11 +89,11 @@ export FAL_KEY=...                             # the operator's fal key; never p
 Every stage prints one JSON object. Exit codes: 0 ok, 1 error, 2 fidelity gate failed, 3 fal request still pending (rerun the same command; it resumes the same request and does not pay twice). Use one job directory per presentation, outside any source repository.
 
 1. **Init.**
-   `$PY $R init --job JOB --piece PIECE [--piece PIECE ...] --prompt "PROMPT" --scene SCENE --energy ENERGY [--aspect 4:5] [--resolution 2K] [--echo] [--frame N] [--name NAME] [--repeat N] [--display crt]`
+   `$PY $R init --job JOB --piece PIECE [--piece PIECE ...] --prompt "PROMPT" --scene SCENE --energy ENERGY [--aspect 4:5] [--resolution 2K] [--no-timelapse] [--echo] [--frame N] [--name NAME] [--repeat N] [--display crt]`
    Choose `SCENE` from `references/scenes.md` (gallery, home, storefront, modern-frame, glass-display, screens, freeform). Repeat `--piece` to show several pieces in one scene; they are placed left to right in the order given, and every rule below applies to each of them.
 
 2. **Analyze.** `$PY $R analyze --job JOB`
-   The output holds, per piece, the palette (colors with weights), tone (key, contrast, warmth, saturation), and for a video piece the chosen frame, plus a merged palette for the grade. Then **look at each `JOB/piece-N-preview.jpg` yourself.** You are the art director: name the themes and the mood.
+   The output holds, per piece, the palette (colors with weights), tone (key, contrast, warmth, saturation), and for a video piece the lead frame and the frames in its time-lapse (`source.timelapse`), plus a merged palette for the grade. Palette and tone describe the piece as presented. Then **look at each `JOB/piece-N-preview.jpg` yourself.** You are the art director: name the themes and the mood.
 
 3. **Brief.** Write a JSON file and run `$PY $R brief --job JOB --brief-file BRIEF.json`.
    Required keys: `themes` (list), `mood` (string), `scene` (the scene paragraph), `motion` (the activity paragraph).

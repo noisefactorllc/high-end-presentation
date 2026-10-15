@@ -20,6 +20,11 @@ Frames are used as the video model delivers them. The video prompt asks for
 slow motion, so movement per frame stays small and trails stay continuous.
 Trails:  bright light above the ghost image, from L (the mean of the few
 brightest frames at each pixel).
+
+A moving piece is time-lapsed from its own frames (`piece`): one lead frame as
+a strong exposure, like a flash during a long exposure, over frames spread
+evenly through the whole clip. Still parts of the piece keep their detail;
+moving parts appear several times along their paths.
 """
 from dataclasses import dataclass, field
 
@@ -48,6 +53,8 @@ MAX_EXPOSURES = 16
 TRAIL_TOP_K = 6  # trails average the k brightest frames per pixel, so a light
                  # seen in a single frame fades instead of printing a dot
 GLASS_REFLECTION = 0.7  # share of moving light that reflects in glazing over the piece
+PIECE_EXPOSURES = 6  # frames spread through a moving piece's clip, behind its lead frame
+PIECE_LEAD = 0.4     # share of the lead frame; the spread frames share the rest equally
 
 
 
@@ -384,3 +391,26 @@ def develop(plate_srgb, st, piece_mask, energy, quad=None, glazed=False):
         report["notes"].append("no-motion: the video shows almost no activity")
     report["activity"] = (_up(activity, shape) * full_support).astype(np.float16)
     return np.clip(out, 0, None).astype(np.float32), report
+
+
+def piece(path, lead, exposures=PIECE_EXPOSURES, lead_share=PIECE_LEAD):
+    """Time-lapse of a moving piece, in linear light: lead_share of the lead
+    frame plus an equal share of each frame spread evenly through the clip.
+    Frames are streamed; only the lead and a running sum are held.
+    Returns (sRGB image, {"lead", "exposures", "lead_share"})."""
+    total = max(media.video_info(path)["frames"], 1)
+    picks = sorted({min(total - 1, int((j + 0.5) / exposures * total)) for j in range(exposures)})
+    front, acc, used = None, None, []
+    for i, f in media.iter_frames(path):
+        if i == lead:
+            front = color.srgb_to_linear(f)
+        if i in picks:
+            lin = color.srgb_to_linear(f).astype(np.float64)
+            acc = lin if acc is None else acc + lin
+            used.append(i)
+        if i >= max(lead, picks[-1]):
+            break
+    if front is None:
+        raise ValueError(f"frame {lead} not in {path}")
+    out = front if not used else lead_share * front + (1 - lead_share) * (acc / len(used)).astype(np.float32)
+    return color.linear_to_srgb(out), {"lead": int(lead), "exposures": used, "lead_share": lead_share}

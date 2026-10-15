@@ -4,7 +4,7 @@
 
 An agent skill that presents an artwork in a synthetic scene. You give it a still image or a video of your work and a short prompt. It returns one still image of the work in a gallery, a home, a storefront window, a public space, or a glass case.
 
-The still is a long exposure. People who walk past appear as translucent figures. People who stop to look become more solid. Bright moving lights leave trails. Depth of field keeps the work in focus, and a subtle grade from the work's own palette ties the scene together.
+The still is a long exposure. People who walk past appear as translucent figures. People who stop to look become more solid. Bright moving lights leave trails. A moving piece is time-lapsed too. Depth of field keeps the work in focus, and a subtle grade from the work's own palette ties the scene together.
 
 The skill works in Claude Code, Codex, and Hermes. It uses image, video, and depth models on [fal](https://fal.ai).
 
@@ -25,7 +25,7 @@ The skill enforces this rule in three steps:
 - One piece on many screens, such as a wall of televisions. The skill finds every screen and puts the original on each one.
 - Screens as picture tubes. The skill renders the curvature, scanlines, and glow itself, from your original pixels.
 
-A video piece shows one frame. The skill selects a frame that is sharp and typical of the clip, or you can name one.
+A video piece is time-lapsed over its whole clip. One frame is the main exposure: the skill selects a frame that is sharp and typical of the clip, or you can name one. Six frames from across the clip are layered behind it. The parts of the piece that do not move stay sharp, and the parts that move appear several times along their paths. You can turn the time-lapse off to show one frame. The skill makes the time-lapse from your own frames. No model makes it.
 
 ## Requirements
 
@@ -73,7 +73,8 @@ The agent reads `skills/high-end-presentation/SKILL.md` and runs the stages. It 
 | Resolution | `1K`, `2K`, `4K` | `2K` |
 | Repeat on screens | 2 to 24 | off |
 | Screen treatment | `flat`, `crt` | `flat` |
-| Motion echo (video pieces) | on or off | off |
+| Time-lapse (video pieces) | on or off | on |
+| Motion echo (video pieces, time-lapse off) | on or off | off |
 | Frame (video pieces) | a frame number | automatic |
 
 Energy controls how many people pass, how many exposures the skill layers, and how strong the light trails are. The skill adapts the layer count to how crowded the clip is. A dense crowd therefore stays a set of distinct figures and does not become a haze.
@@ -94,7 +95,7 @@ Energy controls how many people pass, how many exposures the skill layers, and h
 
 ## How it works
 
-1. **Analyze.** The skill measures the palette and tone of each piece. For a video, it selects a frame. The agent looks at the work and writes a brief: themes, mood, scene, and motion.
+1. **Analyze.** The skill measures the palette and tone of each piece. For a video, it selects a frame and makes the time-lapse. The agent looks at the work and writes a brief: themes, mood, scene, and motion.
 2. **Reference still.** An image model (GPT Image 2.5 Flare by default) makes an empty scene with the work in place. The skill forbids text in the scene. Image models add lettering to signs and boards when a scene invites it.
 3. **Gate and repair.** The skill finds each piece and checks it. Then it puts the original pixels back under the scene's light.
 4. **Draft.** An optional preview with lens and grade, but no people. It costs one image call.

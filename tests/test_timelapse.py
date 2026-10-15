@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 import pytest
 
-from conftest import place, plain_scene, textured_piece
-from hep import color, fidelity, locate, timelapse
+from conftest import place, plain_scene, textured_piece, track_frame_liveness
+from hep import color, fidelity, locate, media, timelapse
 
 
 def _scene_with_texture(h=480, w=384):
@@ -246,3 +246,57 @@ def test_insufficient_shared_coverage_stops_compositing(tmp_path):
     crop = plate[120:360, 96:288].copy()
     with pytest.raises(ValueError, match="registration:coverage"):
         timelapse.stack(_write(tmp_path / "v.mp4", [crop] * 4), plate)
+
+
+def _moving_square_clip(path, n=42):
+    """A textured piece with a white square crossing it, 4 px per frame."""
+    base = textured_piece(160, 200, seed=9)
+    frames = []
+    for i in range(n):
+        f = base.copy()
+        f[60:80, 10 + 4 * i:30 + 4 * i] = 1.0
+        frames.append(f)
+    return _write(path, frames)
+
+
+def _weight(out, frame, rows, cols):
+    """Opacity of white over frame in out, in linear light."""
+    o, b = color.srgb_to_linear(out[rows, cols]), color.srgb_to_linear(frame[rows, cols])
+    return float(((o - b) / np.maximum(1 - b, 1e-3)).mean())
+
+
+def test_piece_timelapse_layers_the_clip_behind_the_lead_frame(tmp_path):
+    clip = _moving_square_clip(tmp_path / "p.mp4")
+    out, used = timelapse.piece(clip, lead=21)
+    assert used["lead"] == 21 and used["exposures"] == [3, 10, 17, 24, 31, 38]
+    frames = [f for _, f in media.iter_frames(clip)]
+    lin = [color.srgb_to_linear(f) for f in frames]
+    share = timelapse.PIECE_LEAD
+    want = share * lin[21] + (1 - share) * np.mean([lin[i] for i in used["exposures"]], 0)
+    assert np.allclose(out, color.linear_to_srgb(want), atol=1e-4)
+    # still parts keep the original detail
+    assert fidelity.detail_correlation(out[100:], frames[0][100:]) > 0.98
+    # the square shows where the lead frame holds it, and fainter along its path
+    assert abs(_weight(out, frames[-1], slice(64, 76), slice(100, 106)) - share) < 0.05
+    assert abs(_weight(out, frames[-1], slice(64, 76), slice(28, 36)) - (1 - share) / 6) < 0.03
+
+
+def test_piece_timelapse_streams_frames(tmp_path, monkeypatch):
+    clip = _moving_square_clip(tmp_path / "p.mp4")
+    state = track_frame_liveness(monkeypatch, media)
+    timelapse.piece(clip, lead=40)
+    assert state["peak"] <= 4
+
+
+def test_piece_timelapse_of_short_clips(tmp_path):
+    out, used = timelapse.piece(_moving_square_clip(tmp_path / "three.mp4", n=3), lead=1)
+    assert used["exposures"] == [0, 1, 2]
+    one = _moving_square_clip(tmp_path / "one.mp4", n=1)
+    out, used = timelapse.piece(one, lead=0)
+    assert used["exposures"] == [0]
+    assert np.abs(out - media.read_frame(one, 0)).max() < 1e-4
+
+
+def test_piece_timelapse_needs_its_lead_frame(tmp_path):
+    with pytest.raises(ValueError, match="frame 99"):
+        timelapse.piece(_moving_square_clip(tmp_path / "p.mp4", n=5), lead=99)

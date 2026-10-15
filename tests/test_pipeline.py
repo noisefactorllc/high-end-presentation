@@ -8,7 +8,7 @@ import pytest
 
 import hep as _pkg  # noqa: F401  (conftest puts scripts/ on the path)
 from conftest import place, plain_scene, textured_piece, track_frame_liveness
-from hep import color, media, stages
+from hep import analyze, color, fidelity, locate, media, stages, timelapse
 from hep.job import Job, JobError
 import importlib.util
 from pathlib import Path
@@ -141,7 +141,7 @@ def test_moving_piece_with_echo(setup):
         vw.write((f[..., ::-1] * 255 + 0.5).astype(np.uint8))
     vw.release()
     root = tmp / "vjob"
-    stages.init(root, clip, "gallery", echo=True)
+    stages.init(root, clip, "gallery", echo=True, timelapse_piece=False)
     job = Job(root)
     a = stages.analyze(job)["analysis"]
     assert a["pieces"][0]["source"]["kind"] == "video"
@@ -160,11 +160,13 @@ def test_explicit_frame_is_used(setup):
     for i in range(10):
         vw.write(np.full((48, 64, 3), i * 25, np.uint8))
     vw.release()
-    stages.init(tmp / "fj", clip, "x", frame=7)
+    stages.init(tmp / "fj", clip, "x", frame=7, timelapse_piece=False)
     job = Job(tmp / "fj")
     stages.analyze(job)
     assert job["analysis"]["pieces"][0]["source"]["frame_index"] == 7
     assert abs(media.load_image(tmp / "fj/piece-0.png").mean() - 175 / 255) < 0.02
+    # the palette describes the frame that is presented
+    assert job["analysis"]["pieces"][0]["palette"][0]["hex"] == analyze.palette(media.read_frame(clip, 7))[0]["hex"]
 
 
 def test_echo_streams_frames_and_matches_the_frame_mean(setup, monkeypatch):
@@ -177,7 +179,7 @@ def test_echo_streams_frames_and_matches_the_frame_mean(setup, monkeypatch):
         vw.write((f[..., ::-1] * 255 + 0.5).astype(np.uint8))
     vw.release()
     root = tmp / "ejob"
-    stages.init(root, clip, "gallery", echo=True)
+    stages.init(root, clip, "gallery", echo=True, timelapse_piece=False)
     job = Job(root)
     state = track_frame_liveness(monkeypatch, media)
     stages.analyze(job)
@@ -374,3 +376,131 @@ def test_failed_registration_invalidates_previous_development(setup, monkeypatch
     assert any("registration:frame:4" in n for n in stages.status(reloaded)["warnings"])
     with pytest.raises(JobError, match="develop"):
         stages.finish(reloaded)
+
+
+def _animated_clip(path, n=48):
+    """A piece that drifts sideways for the whole clip."""
+    base = textured_piece(300, 400, seed=7)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 24, (400, 300))
+    for i in range(n):
+        vw.write((np.roll(base, i * 3, axis=1)[..., ::-1] * 255 + 0.5).astype(np.uint8))
+    vw.release()
+    return path
+
+
+def test_moving_piece_is_time_lapsed_by_default(setup):
+    tmp, _, fake = setup
+    clip = _animated_clip(tmp / "art.mp4")
+    root = tmp / "tjob"
+    stages.init(root, clip, "gallery")
+    job = Job(root)
+    assert job["timelapse"]
+    piece = stages.analyze(job)["analysis"]["pieces"][0]
+    lead = piece["source"]["frame_index"]
+    assert piece["source"]["timelapse"]["lead"] == lead
+    assert len(piece["source"]["timelapse"]["exposures"]) == timelapse.PIECE_EXPOSURES
+    want, _ = timelapse.piece(clip, lead)
+    shown = media.load_image_any_depth(root / "piece-0.png")
+    assert np.abs(shown - want).max() < 1e-3
+    frame = media.read_frame(clip, lead)
+    assert np.abs(shown - frame).mean() > 0.03  # more than one moment of the clip
+    assert piece["palette"] == analyze.palette(want)
+    # the scene is rendered with the time-lapse, which is gated, repaired and verified
+    fake.scene_img = _scene_for_piece(shown, [[96, 120], [416, 130], [410, 370], [100, 362]])
+    stages.brief(job, json.loads(_brief(tmp).read_text()))
+    assert stages.still(job)["passed"]
+    stages.video(job)
+    stages.develop(job)
+    out = stages.finish(job)
+    assert min(out["final_verify"]) >= stages.FINAL_MIN_CORR
+    final = media.load_image_any_depth(out["presentation"])
+    loc = locate.Located.from_json(job["located"][0])
+    assert fidelity.verify(shown, final, loc) > fidelity.verify(frame, final, loc) + 0.1
+
+
+def test_frame_leads_the_time_lapse(setup):
+    tmp, _, _ = setup
+    clip = _animated_clip(tmp / "art.mp4")
+    stages.init(tmp / "lj", clip, "x", frame=30)
+    job = Job(tmp / "lj")
+    source = stages.analyze(job)["analysis"]["pieces"][0]["source"]
+    assert source["frame_index"] == 30 and source["timelapse"]["lead"] == 30
+    want, _ = timelapse.piece(clip, 30)
+    assert np.abs(media.load_image_any_depth(tmp / "lj/piece-0.png") - want).max() < 1e-3
+
+
+def test_without_timelapse_one_frame_is_presented(setup):
+    tmp, _, _ = setup
+    clip = _animated_clip(tmp / "art.mp4")
+    stages.init(tmp / "nj", clip, "x", timelapse_piece=False)
+    job = Job(tmp / "nj")
+    source = stages.analyze(job)["analysis"]["pieces"][0]["source"]
+    assert "timelapse" not in source
+    shown = media.load_image_any_depth(tmp / "nj/piece-0.png")
+    assert np.abs(shown - media.read_frame(clip, source["frame_index"])).max() < 1e-3
+
+
+def test_echo_needs_a_single_frame(setup):
+    tmp, _, _ = setup
+    with pytest.raises(JobError, match="--no-timelapse"):
+        stages.init(tmp / "ej", _animated_clip(tmp / "art.mp4"), "x", echo=True)
+
+
+def test_runner_time_lapse_flag(setup):
+    tmp, pp, _ = setup
+    spec = importlib.util.spec_from_file_location("runner", RUNNER)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    assert runner.main(["init", "--job", str(tmp / "on"), "--piece", str(pp)]) == 0
+    assert Job(tmp / "on")["timelapse"] is True
+    assert runner.main(["init", "--job", str(tmp / "off"), "--piece", str(pp), "--no-timelapse", "--echo"]) == 0
+    assert Job(tmp / "off")["timelapse"] is False
+
+
+def _sparse_clip(clip):
+    """A dark piece with one small, dim form circling it."""
+    form = 0.5 * textured_piece(60, 60, seed=5)
+    vw = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 24, (400, 300))
+    for i in range(48):
+        f = np.full((300, 400, 3), 0.02, np.float32)
+        x, y = 170 + int(110 * np.cos(i / 48 * 2 * np.pi)), 120 + int(80 * np.sin(i / 48 * 2 * np.pi))
+        f[y:y + 60, x:x + 60] = form
+        vw.write((f[..., ::-1] * 255 + 0.5).astype(np.uint8))
+    vw.release()
+    return clip
+
+
+def _developed(tmp, fake, piece):
+    root = tmp / "djob"
+    stages.init(root, piece, "gallery")
+    job = Job(root)
+    stages.analyze(job)
+    fake.scene_img = _scene_for_piece(media.load_image_any_depth(root / "piece-0.png"),
+                                      [[96, 120], [416, 130], [410, 370], [100, 362]])
+    stages.brief(job, json.loads(_brief(tmp).read_text()))
+    assert stages.still(job)["passed"]
+    stages.video(job)
+    stages.develop(job)
+    return job
+
+
+def test_sparse_time_lapse_is_verified_on_its_own_pixels(setup):
+    """A dark, sparse piece has little detail of its own; the band where the
+    frame meets it is scene, not piece, and must not decide the final check."""
+    tmp, _, fake = setup
+    job = _developed(tmp, fake, _sparse_clip(tmp / "sparse.mp4"))
+    assert min(stages.finish(job)["final_verify"]) >= stages.FINAL_MIN_CORR
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_a_redrawn_piece_is_still_refused(setup, sparse):
+    tmp, pp, fake = setup
+    job = _developed(tmp, fake, _sparse_clip(tmp / "sparse.mp4") if sparse else pp)
+    # the piece region of the exposure is replaced with a shifted copy of itself
+    exposure = np.load(job.root / "develop/exposure.npy").astype(np.float32)
+    _, mask = stages._plate(job)
+    inside = (mask > 0.5)[..., None]
+    np.save(job.root / "develop/exposure.npy",
+            np.where(inside, np.roll(exposure, 23, axis=1), exposure).astype(np.float16))
+    with pytest.raises(stages.GateFailed, match="final_verify"):
+        stages.finish(job)

@@ -5,7 +5,7 @@ The agent adds the interpretive half (themes, mood) to the job brief.
 import cv2
 import numpy as np
 
-from . import color, media
+from . import color, media, timelapse
 
 
 def _work_size(img, max_side=256):
@@ -75,12 +75,19 @@ def representative_frame(path, samples=24):
     return index, media.read_frame(path, index)
 
 
-def analyze_piece(path):
-    """Return the analysis dict, and the still used to represent the piece."""
+def analyze_piece(path, frame=None, timelapse_piece=False):
+    """Return the analysis dict, and the still used to represent the piece.
+
+    A moving piece is represented by one frame (`frame`, or the representative
+    one), or by a time-lapse of its clip led by that frame. Palette and tone
+    describe the still that is presented."""
     if media.is_video(path):
-        index, still = representative_frame(path)
-        info = media.video_info(path)
-        source = {"kind": "video", "frame_index": index, **info}
+        index, still = representative_frame(path) if frame is None else (int(frame), None)
+        source = {"kind": "video", "frame_index": index, **media.video_info(path)}
+        if timelapse_piece:
+            still, source["timelapse"] = timelapse.piece(path, index)
+        elif still is None:
+            still = media.read_frame(path, index)
     else:
         still = media.load_image_any_depth(path)
         source = {"kind": "image", "width": still.shape[1], "height": still.shape[0]}
