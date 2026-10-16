@@ -112,36 +112,63 @@ def _gray_small(frame, s):
     return cv2.resize(g, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
 
 
-def _jitter(g0, gt, s):
-    """3x3 map frame_t px -> frame_0 px from ECC (Euclidean) at scale s."""
-    W = np.eye(2, 3, dtype=np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-5)
-    try:
-        _, W = cv2.findTransformECC(g0, gt, W, cv2.MOTION_EUCLIDEAN, criteria, None, 5)
-    except cv2.error:
-        return np.eye(3), False
-    if not np.isfinite(W).all():
-        return np.eye(3), False
-    # People and changing artwork are not camera anchors. Refine on the
-    # agreeing background, with a margin around moving edges. ECC's mask is
-    # in input (gt) coordinates, not template (g0) coordinates.
+def _agreeing(g0, gt, W):
+    """Pixels of g0 that gt, warped by W, agrees with, less a margin around
+    moving edges: the background that anchors the camera."""
     aligned = cv2.warpAffine(gt, W, (g0.shape[1], g0.shape[0]),
                              flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
     valid = cv2.warpAffine(np.ones_like(gt), W, (g0.shape[1], g0.shape[0]),
                            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP) >= 0.999
     stable = ((np.abs(aligned - g0) < 0.06) & valid).astype(np.uint8)
-    stable = cv2.erode(stable, np.ones((5, 5), np.uint8))
-    if stable.mean() < 0.35 or g0[stable > 0].std() < 0.01:
-        return np.eye(3), False
-    mask = cv2.warpAffine(stable, W, (gt.shape[1], gt.shape[0]), flags=cv2.INTER_NEAREST)
+    return cv2.erode(stable, np.ones((5, 5), np.uint8))
+
+
+def _refine(g0, gt, W, criteria):
+    """ECC on the agreeing background only, twice so the mask follows the
+    estimate. Returns (score, W, agreeing share), or None."""
+    score = None
+    for _ in range(2):
+        stable = _agreeing(g0, gt, W)
+        if stable.mean() < 0.35 or g0[stable > 0].std() < 0.01:
+            return None
+        # ECC's mask is in input (gt) coordinates, not template (g0) coordinates.
+        mask = cv2.warpAffine(stable, W, (gt.shape[1], gt.shape[0]), flags=cv2.INTER_NEAREST)
+        try:
+            score, W = cv2.findTransformECC(g0, gt, W, cv2.MOTION_EUCLIDEAN, criteria, mask, 5)
+        except cv2.error:
+            return None
+        if not np.isfinite(score) or not np.isfinite(W).all():
+            return None
+    return score, W, float(_agreeing(g0, gt, W).mean())
+
+
+def _jitter(g0, gt, s, prior=None):
+    """3x3 map frame_t px -> frame_0 px from ECC (Euclidean) at scale s.
+
+    `prior` is the previous frame's map; a camera moves continuously, so the
+    search starts there."""
+    S = np.diag([s, s, 1.0])
+    prior = np.eye(3) if prior is None else prior
+    seed = (S @ np.linalg.inv(prior) @ np.linalg.inv(S))[:2].astype(np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-5)
+    # People and changing artwork are not camera anchors. When they fill much
+    # of the frame they drag a whole-frame fit, so the background that agrees
+    # at the prior pose is one start; a whole-frame fit, for a sudden camera
+    # move, is the other. The pose more of the frame agrees with wins.
+    starts = [seed]
     try:
-        score, W = cv2.findTransformECC(g0, gt, W, cv2.MOTION_EUCLIDEAN, criteria, mask, 5)
+        _, W = cv2.findTransformECC(g0, gt, seed.copy(), cv2.MOTION_EUCLIDEAN, criteria, None, 5)
+        if np.isfinite(W).all():
+            starts.append(W)
     except cv2.error:
+        pass
+    fits = [f for f in (_refine(g0, gt, W.copy(), criteria) for W in starts) if f is not None]
+    if not fits:
         return np.eye(3), False
-    if not np.isfinite(score) or score < 0.85 or not np.isfinite(W).all():
+    score, W, _ = max(fits, key=lambda f: f[2])
+    if score < 0.85:
         return np.eye(3), False
     W3 = np.vstack([W, [0, 0, 1]]).astype(np.float64)
-    S = np.diag([s, s, 1.0])
     W_full = np.linalg.inv(S) @ W3 @ S          # frame_0 px -> frame_t px
     return np.linalg.inv(W_full), True
 
@@ -171,7 +198,7 @@ def stack(video_path, plate, *, canvas_scale=None, jitter=True):
     def warped(i, f):
         J = np.eye(3)
         if jitter and i > 0:
-            J, ok = _jitter(g0, _gray_small(f, es), es)
+            J, ok = _jitter(g0, _gray_small(f, es), es, jit[i - 1])
             if not ok:
                 raise ValueError(f"registration:frame:{i}: alignment failed or correlation below 0.85")
         jit[i] = J

@@ -241,6 +241,29 @@ def test_registration_keeps_background_fixed_while_person_and_camera_move(tmp_pa
     assert diff[210:350, 80:220].mean() > 0.02
 
 
+@pytest.mark.parametrize("drift", [0.0, 0.5])
+def test_a_crowd_covering_half_the_frame_does_not_move_the_camera(tmp_path, drift):
+    # From frame 3 a textured crowd fills the lower half and streams sideways,
+    # as a dense opening-night crowd does, while the camera is locked off or
+    # drifts slowly (drift px per frame).
+    plate = _scene_with_texture()
+    h, w = plate.shape[:2]
+    crowd = np.clip(textured_piece(h, 3 * w, seed=7) * 0.35, 0, 1).astype(np.float32)
+    frames = []
+    for i in range(30):
+        M = np.float32([[1, 0, -drift * i], [0, 1, -0.5 * drift * i]])
+        f = cv2.warpAffine(plate, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+        if 3 <= i < 27:
+            f[h // 2:] = crowd[h // 2:, 8 * i:8 * i + w]
+        frames.append(f)
+    st = timelapse.stack(_write(tmp_path / "v.mp4", frames), plate)
+    true_shift = np.hypot(drift, 0.5 * drift) * 29 / w
+    assert abs(st.max_shift - true_shift) < 0.005
+    b = color.linear_to_srgb(st.B)
+    canvas_plate = cv2.resize(plate, (b.shape[1], b.shape[0]), interpolation=cv2.INTER_AREA)
+    assert np.abs(b - canvas_plate)[20:h // 2 - 20, 20:-20].mean() < 0.02
+
+
 def test_insufficient_shared_coverage_stops_compositing(tmp_path):
     plate = textured_piece(480, 384, seed=3)
     crop = plate[120:360, 96:288].copy()
